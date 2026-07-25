@@ -5,12 +5,14 @@ translates between the agent native protocol and AgentOS unified internal
 interface.
 """
 
+from agentos.drivers.anthropic_driver import AnthropicDriver
 from agentos.drivers.base import BaseDriver, ChatResult, DriverError
 from agentos.drivers.codex_adapter import CodexAdapter
 from agentos.drivers.openai_driver import OpenAIDriver
 from agentos.drivers.ws_driver import WSDriver
 
 __all__ = [
+    "AnthropicDriver",
     "BaseDriver",
     "ChatResult",
     "CodexAdapter",
