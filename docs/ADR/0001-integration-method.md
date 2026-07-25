@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-07-25
-- **Deciders**: Codex, OpenClaw
+- **Deciders**: Codex, OpenClaw (龙大), Increase (老大)
 
 ## Context
 
@@ -41,3 +41,9 @@ External agents (OpenClaw, Codex, Claude, Gemini, ...) each expose their own nat
 - Per-agent subclass pattern isolates vendor-specific code.
 - Hard tool-whitelist enforcement deferred (ADR-0007 follow-up).
 - Attachment file-API path (binary, large files) added in next iteration via per-driver `should_use_file_api()` hook.
+
+## Alternatives Considered
+
+- **A. Force every agent to expose OpenAI-compat API.** Requires vendor cooperation; blocks adoption on holdouts. Rejected.
+- **B. Per-agent native drivers (HTTP, WS, CLI each).** Maximum fidelity per vendor but high maintenance, code duplication across drivers. Rejected for MVP.
+- **C. Hybrid (chosen).** OpenAI-compat as default for chat; WS for native features (camera, node mgmt). Best balance of integration cost and capability coverage.

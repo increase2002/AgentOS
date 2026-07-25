@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-07-25
-- **Deciders**: Codex
+- **Deciders**: Codex, Increase (老大)
 
 ## Context
 
@@ -37,3 +37,9 @@ Only Planner uses a flagship LLM in MVP. Code-based roles have zero token cost a
 - Router logic is fully testable; can be tuned without retraining.
 - Cost Controller has hard budget caps (over-budget = cancel + escalate).
 - Planner prompts are versioned; regressions caught by eval suite (ADR-0004).
+
+## Alternatives Considered
+
+- **A. All five roles as LLM-based.** Maximum flexibility, but cost unpredictable; Judge and Summarizer do not need flagship reasoning. Rejected.
+- **B. All five roles as code-based.** Zero token cost, fully deterministic, but Planner cannot reason about ambiguous goals and Judge cannot evaluate nuanced output. Rejected.
+- **C. Role-specific best fit (chosen).** Code where deterministic; small model where nuanced but bounded; flagship only where multi-step reasoning is essential.

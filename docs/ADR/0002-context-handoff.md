@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-07-25
-- **Deciders**: Codex, OpenClaw
+- **Deciders**: Codex, OpenClaw (龙大), Increase (老大)
 
 ## Context
 
@@ -31,3 +31,9 @@ Driver returns the artifact inline. Orchestrator persists to the ArtifactStore (
 **Mitigations**
 - Driver-side validation; malformed artifacts return `DriverError` with an actionable message.
 - `next_stage_inputs` is a free-form dict for per-stage context that does not fit the artifact schema.
+
+## Alternatives Considered
+
+- **A. Pass full conversation history.** High cost (5-50k tokens per handoff), high fidelity, but most tokens are noise to the downstream agent. Rejected.
+- **B. Pass last N turns.** Medium cost, loses early context, fragile boundary choice (where to cut?). Rejected.
+- **C. Artifact + structured summary (chosen).** Low cost, explicit schema, validated, versioned. ~90% token savings over full history.

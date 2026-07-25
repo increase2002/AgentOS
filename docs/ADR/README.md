@@ -2,7 +2,7 @@
 
 This directory contains the Architecture Decision Records (ADRs) for AgentOS.
 Each ADR captures one significant architectural decision: the context, the
-choice, and its consequences.
+choice, the consequences, and the alternatives that were considered.
 
 | ADR | Title | Status |
 |---|---|---|
@@ -17,3 +17,52 @@ choice, and its consequences.
 
 For the frozen decision summary, see [`docs/01-protocol-v0.1.md`](../01-protocol-v0.1.md).
 For the original design document, see [`docs/AgentOS_Multi_Agent_Architecture_Design.md`](../AgentOS_Multi_Agent_Architecture_Design.md).
+
+## ADR Template
+
+All ADRs in this directory use the following template:
+
+```markdown
+# ADR-NNNN: <title>
+
+- **Status**: Proposed | Accepted | Deprecated
+- **Date**: YYYY-MM-DD
+- **Deciders**: Codex, OpenClaw (龙大), Increase (老大)
+
+## Context
+<what problem we faced>
+
+## Decision
+<what we chose>
+
+## Consequences
+<trade-offs of the choice>
+
+## Alternatives Considered
+<A / B / C with reasoning>
+```
+
+## ADR PR Template
+
+When proposing a new ADR or superseding an existing one, open a PR with this body:
+
+```markdown
+### ADR
+- ADR number: NNNN
+- Status change: Proposed → Accepted | Accepted → Deprecated
+- Deciders: ...
+
+### Context
+<why this ADR now>
+
+### Decision
+<what we decided>
+
+### Consequences
+<positive + negative + mitigations>
+
+### Alternatives Considered
+<A / B / C with reasoning>
+```
+
+PRs touching `docs/ADR/*.md` or `docs/01-protocol-v0.1.md` require review from at least one other decider before merge. Direct commits to `main` are not allowed for these paths.

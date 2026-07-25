@@ -31,6 +31,7 @@ decision lives in its corresponding ADR under `docs/ADR/`.
 - MVP cross-encoder: OpenAI `gpt-4o-mini` (cost negligible). Future: local BGE reranker.
 - Default embedding: `text-embedding-3-small` (1536 dim).
 - Driver returns hybrid weights metadata → stored in eval log for later tuning.
+- **Boundary**: cross-agent memory sharing is the Orchestrator MemoryService's responsibility. It does NOT depend on, nor is constrained by, individual agent-internal configurations (e.g. OpenClaw `tools.sessions.visibility`).
 
 ### Concurrency & Streaming (ADR-0006)
 - Concurrency Budget = 4 (configurable per host).
@@ -65,6 +66,12 @@ task:<task_id>:stage:<stage_id>[:sub:<sub_id>]
 
 Schema: `id`, `from_agent`, `to_agent`, `type`, `priority`, `payload`,
 `created_at`.
+
+## Process
+
+- **ADR changes** (`docs/ADR/*.md`, this protocol doc) require a PR with review by at least one other decider. Direct commits to `main` are not allowed for these paths. The ADR PR template lives at the bottom of [`docs/ADR/README.md`](ADR/README.md).
+- **Driver / test code** (`src/agentos/**`, `tests/**`) commits directly to `main` are OK. Commit message MUST reference the relevant ADR number (e.g. `feat(memory): fan-out search per ADR-0005`).
+- **Operational docs** (`docs/02-bootstrap.md`) commits directly to `main` are OK.
 
 ## What v0.1 does NOT cover
 

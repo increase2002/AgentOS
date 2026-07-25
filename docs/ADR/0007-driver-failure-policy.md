@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-07-25
-- **Deciders**: Codex, OpenClaw
+- **Deciders**: Codex, OpenClaw (龙大), Increase (老大)
 
 ## Context
 
@@ -34,3 +34,9 @@ Fallback is left to the **task-planning layer** (Planner decides "if Codex fails
 **Mitigations**
 - Planner can pre-declare fallback at task level if cost is acceptable.
 - Cost Controller enforces retry budget cap per task.
+
+## Alternatives Considered
+
+- **A. Fail-fast only, no retry.** Surfaces transient errors to user unnecessarily (rate limits, brief outages). Rejected.
+- **B. Fail-fast + configurable same-driver retry (chosen).** Graceful on transient failures; cost bounded by retry config; quality attribution preserved.
+- **C. Auto-fallback chain enabled by default.** Cost unpredictable (could burn 3x tokens silently); eval attribution breaks (which driver actually ran?). Rejected as default.

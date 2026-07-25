@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-07-25
-- **Deciders**: Codex, OpenClaw
+- **Deciders**: Codex, OpenClaw (龙大), Increase (老大)
 
 ## Context
 
@@ -45,3 +45,9 @@ Disabled for: code, test, deploy, retrieval, data analysis (ground truth exists;
 - Implicit signal definitions documented in `docs/04-eval-signals.md` (planned).
 - Benchmark suite versioned; CI alerts on drift > 5%.
 - Debate eligibility check is at planning time, not runtime, so cost is bounded.
+
+## Alternatives Considered
+
+- **A. Single signal (user thumbs only).** Too sparse, too noisy, dominated by motivated users. Rejected.
+- **B. Multi-source, end-to-end only.** Cannot localize which stage failed. Rejected.
+- **C. Multi-source with per-stage + debate gating (chosen).** Localizes failures, bounded cost on debate, multiple signals compensate for individual weakness.

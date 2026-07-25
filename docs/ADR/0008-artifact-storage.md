@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-07-25
-- **Deciders**: Codex, OpenClaw
+- **Deciders**: Codex, OpenClaw (龙大), Increase (老大)
 
 ## Context
 
@@ -32,3 +32,9 @@ Artifacts (files, structured data) need a storage layer for cross-stage referenc
 - `ArtifactStore` interface designed for S3/MinIO swap.
 - Eval pipeline reads via the interface, not raw FS.
 - Out of scope for v0.1: replication, CDN, signed URLs.
+
+## Alternatives Considered
+
+- **A. Agent workspace (each agent stores its own artifacts).** Fragmented; cross-stage references must walk through every agent. Rejected.
+- **B. Git LFS.** Version-controlled, but slow for large files and awkward diff. Rejected.
+- **C. Orchestrator local FS MVP, S3/MinIO later via interface (chosen).** Clean cross-stage references, zero infra for MVP, swappable interface for v0.2+ scale-out.

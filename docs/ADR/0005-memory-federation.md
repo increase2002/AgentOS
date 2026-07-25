@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-07-25
-- **Deciders**: Codex, OpenClaw
+- **Deciders**: Codex, OpenClaw (龙大), Increase (老大)
 
 ## Context
 
@@ -25,6 +25,10 @@ MemoryService.search(query, scope, top_k):
 - Default embedding model: `text-embedding-3-small` (1536 dim).
 - Driver returns hybrid weights metadata; stored in eval log for later tuning.
 
+## Boundary
+
+**Cross-agent memory sharing is the Orchestrator MemoryService's responsibility.** It does NOT depend on, nor is constrained by, individual agent-internal configurations such as OpenClaw's `tools.sessions.visibility`. The Orchestrator MemoryService is the only authority for cross-agent memory federation; agent-internal visibility configs affect only that agent's own session tree.
+
 ## Consequences
 
 **Positive**
@@ -42,3 +46,9 @@ MemoryService.search(query, scope, top_k):
 - Per-agent search runs in parallel under the Concurrency Budget.
 - Cache rerank scores keyed by `(query_hash, doc_hash)`.
 - Future: per-agent embedding cache; cross-encoder batched.
+
+## Alternatives Considered
+
+- **A. Force single embedding model across all agents.** Blocks adoption (data-sovereignty, vendor lock-in concerns); impossible without vendor cooperation. Rejected.
+- **B. Per-agent embedding + Orchestrator cross-encoder rerank (chosen).** No forcing of embedding model; each agent keeps native retrieval; mature pattern (Elasticsearch RRF, LangChain MultiVectorRetriever).
+- **C. Per-agent embedding + Orchestrator space mapping.** Theoretically optimal but expensive (per-pair mapping maintenance). Deferred to v0.2+.
