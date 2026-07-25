@@ -39,15 +39,44 @@ class OpenAIDriver(BaseDriver):
         # Static headers to attach on every request (e.g. session pinning).
         self.extra_headers: dict[str, str] = config.get("extra_headers", {})
 
-    async def chat(
+    def _build_messages(
         self,
         brief: str,
-        *,
         attachments: list[dict[str, Any]] | None = None,
-        session_key: str | None = None,
         tool_subset: list[str] | None = None,
-    ) -> ChatResult:
-        messages: list[dict[str, Any]] = [{"role": "user", "content": brief}]
+    ) -> list[dict[str, Any]]:
+        """Build the chat-completions messages array from a task brief.
+
+        tool_subset semantics:
+          - None  -> no constraint (default; agent may invoke any tool it has)
+          - []    -> plan-only / read-only mode; agent must not invoke any tool
+          - [...] -> agent may only invoke tools whose names appear in this list
+
+        Enforcement is SOFT in this MVP: the subset is conveyed via a system
+        message. Hard enforcement (only the listed tool schemas reach
+        `tools=`) requires a tool-schema registry and lands in the next
+        iteration. See ADR-0004 (planned).
+        """
+        messages: list[dict[str, Any]] = []
+
+        if tool_subset is not None:
+            if tool_subset:
+                tool_list = ", ".join(tool_subset)
+                system_msg = (
+                    f"You may only use these tools: {tool_list}. "
+                    "If a request requires a tool not in this list, refuse and "
+                    "explain why."
+                )
+            else:
+                system_msg = (
+                    "You are in plan-only / read-only mode. Do not invoke any "
+                    "tools, do not write any files. Analyze the request and "
+                    "return a structured plan only."
+                )
+            messages.append({"role": "system", "content": system_msg})
+
+        messages.append({"role": "user", "content": brief})
+
         if attachments:
             for att in attachments:
                 name = att.get("name", "unknown")
@@ -56,6 +85,18 @@ class OpenAIDriver(BaseDriver):
                     "role": "user",
                     "content": f"[attachment:{name}]\n{content}",
                 })
+
+        return messages
+
+    async def chat(
+        self,
+        brief: str,
+        *,
+        attachments: list[dict[str, Any]] | None = None,
+        session_key: str | None = None,
+        tool_subset: list[str] | None = None,
+    ) -> ChatResult:
+        messages = self._build_messages(brief, attachments, tool_subset)
 
         headers = dict(self.extra_headers)
         if session_key:
@@ -91,6 +132,7 @@ class OpenAIDriver(BaseDriver):
                 "model": resp.model,
                 "finish_reason": choice.finish_reason,
                 "session_key": session_key,
+                "tool_subset": tool_subset,
             },
         )
 
