@@ -8,6 +8,7 @@ interface.
 from agentos.drivers.anthropic_driver import AnthropicDriver
 from agentos.drivers.base import BaseDriver, ChatResult, DriverError
 from agentos.drivers.codex_adapter import CodexAdapter
+from agentos.drivers.gemini_driver import GeminiDriver
 from agentos.drivers.openai_driver import OpenAIDriver
 from agentos.drivers.ws_driver import WSDriver
 
@@ -17,6 +18,7 @@ __all__ = [
     "ChatResult",
     "CodexAdapter",
     "DriverError",
+    "GeminiDriver",
     "OpenAIDriver",
     "WSDriver",
 ]
