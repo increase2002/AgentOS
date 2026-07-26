@@ -16,6 +16,10 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+[project.scripts]
+agentos = "agentos.cli:main"
+
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
