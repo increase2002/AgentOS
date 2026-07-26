@@ -1,6 +1,6 @@
 # ADR-0010: Orchestrator Engine
 
-- **Status**: Proposed (Codex / OpenClaw agreement pending Phase 3 dogfood validation)
+- **Status**: Accepted (Phase 3 dogfood validated via `examples/demo_bus_loop.py`, commit `64e8f17`)
 - **Date**: 2026-07-26
 - **Deciders**: Codex, OpenClaw (龙大), Increase (老大)
 
