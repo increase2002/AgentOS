@@ -1,4 +1,4 @@
-"""`agentos` CLI: send / receive / show / search / inbox.
+"""`agentos` CLI: send / receive / show / search / inbox / watch.
 
 Minimal interface for the JSONL message bus. Used to dogfood AgentOS
 during development (老大 ferries messages between Codex and OpenClaw
@@ -14,12 +14,28 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import signal
 import sys
 import uuid
 from pathlib import Path
 
+# --- Ensure UTF-8 stdout/stderr on Windows (best effort) -------------------
+# PowerShell on Windows defaults to GBK (cp936) for console output, which
+# mangles non-ASCII characters (emoji, CJK). We reconfigure to UTF-8 with
+# ``errors='replace'`` so a stray emoji never crashes the CLI.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    except (AttributeError, ValueError):
+        pass  # Python < 3.7 or non-reconfigurable (e.g. pytest capture)
+
 from agentos.bus.jsonl import DEFAULT_BUS_PATH, JSONLBus
+from agentos.bus.watch import BusWatcher
 from agentos.schemas.message import Message, MessageType, Priority
+from agentos.telemetry import JSONLHook
+
+logger = logging.getLogger(__name__)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -75,6 +91,30 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # inbox
     p = sub.add_parser("inbox", help="Inbox summary (counts per recipient)")
+
+    # watch (dogfood helper: tail bus + print incoming)
+    p = sub.add_parser("watch", help="Tail the bus and print new messages")
+    p.add_argument(
+        "--to", dest="to_agent", default=None,
+        help="Filter: only show messages addressed to this agent",
+    )
+    p.add_argument(
+        "--from", dest="from_agent", default=None,
+        help="Filter: only show messages from this agent",
+    )
+    p.add_argument(
+        "--type", dest="message_type", default=None,
+        choices=[t.value for t in MessageType],
+        help="Filter: only show messages of this type",
+    )
+    p.add_argument(
+        "--interval", type=float, default=1.0,
+        help="Poll interval in seconds (default: 1.0)",
+    )
+    p.add_argument(
+        "--from-start", action="store_true",
+        help="Replay existing tail on startup (default: only new messages)",
+    )
 
     return parser
 
@@ -133,6 +173,18 @@ def cmd_send(args: argparse.Namespace) -> int:
         f"{msg.from_agent} -> {msg.to_agent}  "
         f"type={msg.type.value} priority={msg.priority.value}"
     )
+    # Telemetry: bus message out.
+    JSONLHook().record(
+        "bus_message_out",
+        from_agent=msg.from_agent,
+        to_agent=msg.to_agent,
+        payload={
+            "id": msg.id,
+            "type": msg.type.value,
+            "priority": msg.priority.value,
+            "task_id": args.task,
+        },
+    )
     return 0
 
 
@@ -150,7 +202,10 @@ def _format_record(rec: dict) -> str:
         out.append(payload["text"])
     elif "content" in payload:
         out.append("")
-        out.append(f"[from {payload.get('file', '?')}]")
+        if payload.get("source") == "stdin":
+            out.append("[from stdin]")
+        else:
+            out.append(f"[from {payload.get('file', '?')}]")
         content = payload["content"]
         if len(content) > 800:
             content = content[:800] + "\n... [truncated]"
@@ -161,6 +216,7 @@ def _format_record(rec: dict) -> str:
 def cmd_receive(args: argparse.Namespace) -> int:
     bus = JSONLBus(args.bus)
     msgs = bus.to_agent(args.to_agent, since_id=args.since)
+    hook = JSONLHook()
     if not msgs:
         print(f"[inbox] {args.to_agent}: no new messages")
         return 0
@@ -168,6 +224,12 @@ def cmd_receive(args: argparse.Namespace) -> int:
     for rec in msgs:
         print(_format_record(rec))
         print()
+        hook.record(
+            "bus_message_in",
+            from_agent=rec.get("from_agent"),
+            to_agent=rec.get("to_agent"),
+            payload={"id": rec.get("id"), "type": rec.get("type")},
+        )
     print(f"[inbox] {len(msgs)} message(s)")
     return 0
 
@@ -216,6 +278,63 @@ def cmd_inbox(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_watch(args: argparse.Namespace) -> int:
+    """Tail the bus and print new messages as they arrive.
+
+    Stops on Ctrl-C. Useful for ferrying messages without manual receive.
+    By default only new (post-startup) messages are shown; pass --from-start
+    to replay the existing tail.
+    """
+    hook = JSONLHook()
+
+    def handler(msg: Message) -> None:
+        rec = {
+            "id": msg.id,
+            "from_agent": msg.from_agent,
+            "to_agent": msg.to_agent,
+            "type": msg.type.value,
+            "priority": msg.priority.value,
+            "payload": msg.payload,
+            "created_at": msg.created_at.isoformat(),
+            "artifact_ref": None,
+        }
+        print(_format_record(rec))
+        print()
+        sys.stdout.flush()
+        hook.record(
+            "bus_message_in",
+            from_agent=msg.from_agent,
+            to_agent=msg.to_agent,
+            payload={"id": msg.id, "type": msg.type.value},
+        )
+
+    watcher = BusWatcher(
+        args.bus,
+        handler,
+        to_agent=args.to_agent,
+        from_agent=args.from_agent,
+        message_type=args.message_type,
+        poll_interval_s=args.interval,
+        from_start=args.from_start,
+    )
+
+    # Wire Ctrl-C to watcher.stop().
+    def _on_sigint(sig, frame):
+        watcher.stop()
+    signal.signal(signal.SIGINT, _on_sigint)
+
+    print(
+        f"[watch] tailing {args.bus}  "
+        f"(to={args.to_agent} from={args.from_agent} type={args.message_type} "
+        f"interval={args.interval}s from_start={args.from_start})  Ctrl-C to stop",
+        file=sys.stderr,
+    )
+    sys.stderr.flush()
+    watcher.watch()
+    print("[watch] stopped", file=sys.stderr)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -225,6 +344,7 @@ def main(argv: list[str] | None = None) -> int:
         "show": cmd_show,
         "search": cmd_search,
         "inbox": cmd_inbox,
+        "watch": cmd_watch,
     }
     return handlers[args.command](args)
 
