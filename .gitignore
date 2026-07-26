@@ -34,3 +34,13 @@ artifacts/
 # CoPilot / agent
 .codex/
 .agents/
+
+# AgentOS runtime state (NOT source)
+.agentos/
+
+# pytest temp dirs (one per run)
+.pytest-tmp/
+.pytest-tmp-*/
+
+# Codex debug residue
+test_output.txt
