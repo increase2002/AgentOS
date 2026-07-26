@@ -15,7 +15,7 @@ choice, the consequences, and the alternatives that were considered.
 | [0007](0007-driver-failure-policy.md) | Driver Failure Policy (fail-fast + retry) | Accepted |
 | [0008](0008-artifact-storage.md) | Artifact Storage (local FS) | Accepted |
 | [0009](0009-tool-subset-enforcement.md) | Tool Subset Enforcement (plan-only / read-only) | Accepted (MVP), Proposed (v0.2 hard) |
-| 0010 | Orchestrator Engine (Core API + DAG Execution) | Proposed (OpenClaw, this week) |
+| [0010](0010-orchestrator-engine.md) | Orchestrator Engine (Core API + DAG Execution) | Proposed |
 | [0011](0011-memory-backend-tiering.md) | Memory Backend Tiering (Real / Synthetic / Empty) | Accepted |
 
 For the frozen decision summary, see [`docs/01-protocol-v0.1.md`](../01-protocol-v0.1.md).
