@@ -5,6 +5,9 @@ during development (老大 ferries messages between Codex and OpenClaw
 via these commands instead of copy-pasting chat windows).
 
 Entry point registered in pyproject.toml as `agentos`.
+
+Stdin support: if neither --text nor --from-file is provided, the
+message body is read from stdin (interactive paste works naturally).
 """
 
 from __future__ import annotations
@@ -44,10 +47,13 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=[p.value for p in Priority],
         default=Priority.NORMAL.value,
     )
-    p.add_argument("--text", help="Message body (text)")
+    p.add_argument(
+        "--text",
+        help="Message body (text). If neither --text nor --from-file is set, reads from stdin.",
+    )
     p.add_argument(
         "--from-file",
-        help="Path to a file whose contents become the payload (overrides --text)",
+        help="Path to a file whose contents become the payload (overrides --text / stdin).",
     )
     p.add_argument(
         "--task", help="Optional task_id to embed in payload (for `show --task` lookup)",
@@ -73,15 +79,45 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _resolve_body(args: argparse.Namespace) -> tuple[str | None, str | None]:
+    """Resolve message body. Returns (content, source_path_or_None).
+
+    Priority: --from-file > --text > stdin.
+    Returns (None, None) if stdin is a TTY (no body at all).
+    """
+    if args.from_file:
+        path = Path(args.from_file)
+        if not path.exists():
+            print(
+                f"[bus] ERROR: --from-file {path} does not exist.\n"
+                f"  Either create the file first, or pipe the body via stdin:\n"
+                f"    Get-Clipboard | agentos send --to {args.to_agent} --from {args.from_agent}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        return path.read_text(encoding="utf-8"), str(path)
+    if args.text:
+        return args.text, None
+    if not sys.stdin.isatty():
+        return sys.stdin.read(), None
+    print(
+        f"[bus] ERROR: no message body provided.\n"
+        f"  Pass --text '...', or --from-file path, or pipe via stdin:\n"
+        f"    echo 'message' | agentos send --to {args.to_agent} --from {args.from_agent}",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
 def cmd_send(args: argparse.Namespace) -> int:
     bus = JSONLBus(args.bus)
+    body, source = _resolve_body(args)
     payload: dict = {"task_id": args.task} if args.task else {}
-    if args.from_file:
-        content = Path(args.from_file).read_text(encoding="utf-8")
-        payload["file"] = args.from_file
-        payload["content"] = content
+    if source:
+        payload["file"] = source
+        payload["content"] = body
     else:
-        payload["text"] = args.text or ""
+        payload["text"] = body or ""
 
     msg = Message(
         id=f"msg-{uuid.uuid4().hex[:12]}",
@@ -91,7 +127,7 @@ def cmd_send(args: argparse.Namespace) -> int:
         priority=Priority(args.priority),
         payload=payload,
     )
-    bus.append(msg, artifact_ref=args.from_file)
+    bus.append(msg, artifact_ref=source)
     print(
         f"[bus] sent {msg.id}  "
         f"{msg.from_agent} -> {msg.to_agent}  "

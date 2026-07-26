@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from agentos.cli import main as cli_main
 
 
@@ -141,3 +143,57 @@ def test_send_default_message_type(tmp_path):
     recs = _read_jsonl(bus)
     assert recs[0]["type"] == "HANDOFF"
     assert recs[0]["priority"] == "NORMAL"
+
+
+# ---------------------------------------------------------------------------
+# Stdin support
+# ---------------------------------------------------------------------------
+
+
+def test_send_from_stdin(tmp_path, monkeypatch):
+    """When no --text and no --from-file, CLI reads from stdin."""
+    bus = tmp_path / "bus.jsonl"
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr("sys.stdin.read", lambda: "pasted from chatgpt\n")
+
+    rc = cli_main([
+        "--bus", str(bus),
+        "send", "--from", "openclaw", "--to", "codex",
+    ])
+    assert rc == 0
+
+    recs = _read_jsonl(bus)
+    assert recs[0]["payload"]["text"] == "pasted from chatgpt\n"
+
+
+def test_send_from_file_missing_gives_clear_error(tmp_path, capsys):
+    """When --from-file points to a missing file, error message suggests workarounds."""
+    bus = tmp_path / "bus.jsonl"
+    missing = tmp_path / "does-not-exist.md"
+    with pytest.raises(SystemExit) as exc_info:
+        cli_main([
+            "--bus", str(bus),
+            "send", "--from", "openclaw", "--to", "codex",
+            "--from-file", str(missing),
+        ])
+    assert exc_info.value.code == 2
+    err = capsys.readouterr().err
+    assert "does not exist" in err
+    assert "stdin" in err  # suggests stdin workaround
+
+
+def test_send_no_body_gives_clear_error(tmp_path, capsys, monkeypatch):
+    """When TTY (no body anywhere), error message explains all 3 options."""
+    bus = tmp_path / "bus.jsonl"
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_main([
+            "--bus", str(bus),
+            "send", "--from", "openclaw", "--to", "codex",
+        ])
+    assert exc_info.value.code == 2
+    err = capsys.readouterr().err
+    assert "--text" in err
+    assert "--from-file" in err
+    assert "stdin" in err
