@@ -1,7 +1,9 @@
 """C.1 real E2E verification.
 
 After Contract B was enabled, this script verifies the full memory
-federation chain.
+federation chain: OpenAIDriver against real OpenClaw, OpenClawMemoryAdapter
+dict->MemoryHit translation, and MemoryService fan-out with Empty-tier
+down-weight per ADR-0011.
 """
 
 from __future__ import annotations
@@ -24,14 +26,14 @@ from agentos.memory import (
     MemoryService,
     NullReranker,
     OpenClawMemoryAdapter,
+    resolve_openclaw_token,
 )
 
-TOKEN_PATH = Path(r"G:\AgentOS\.openclaw\gateway.token")
 OPENCLAW_BASE_URL = "http://127.0.0.1:18789/v1"
 
 
 def real_chat_smoke() -> None:
-    token = TOKEN_PATH.read_text(encoding="utf-8").strip()
+    token = resolve_openclaw_token()
     driver = OpenAIDriver(
         "openclaw-real",
         {

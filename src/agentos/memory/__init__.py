@@ -5,6 +5,7 @@ This package implements the Memory Federation layer:
 - EmptyMemoryDriver + per-vendor subclasses (Codex / Anthropic / Gemini)
 - OpenClawMemoryAdapter (wraps OpenClaw's dict-based OpenClawMemoryDriver
   into the unified MemoryHit shape; tier=real)
+- openclaw_token: resolve_openclaw_token() helper for canonical token path
 - MemoryService (fan-out + normalize + cross-encoder rerank)
 - CrossEncoderReranker (interface) + GPT4oMiniReranker + NullReranker
 
@@ -19,6 +20,7 @@ from agentos.memory.empty_drivers import (
     GeminiMemoryDriver,
 )
 from agentos.memory.openclaw_adapter import OpenClawMemoryAdapter
+from agentos.memory.openclaw_token import OpenClawTokenError, resolve_openclaw_token
 from agentos.memory.rerank import (
     CrossEncoderReranker,
     GPT4oMiniReranker,
@@ -39,4 +41,6 @@ __all__ = [
     "MemoryService",
     "NullReranker",
     "OpenClawMemoryAdapter",
+    "OpenClawTokenError",
+    "resolve_openclaw_token",
 ]
