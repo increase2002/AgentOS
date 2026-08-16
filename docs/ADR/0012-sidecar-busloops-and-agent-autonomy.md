@@ -85,32 +85,136 @@ d. **Conflict avoidance**: cron must not race with main session. Use OpenClaw's 
 
 ### 3. Codex Queue Processor Implementation Path
 
-> *Codex fills (this section was skeleton-placeholder): concrete steps + Codex-side semantics*
+#### 3.1 `agentos bus-watch-codex` CLI subcommand
 
-**Components needed**:
+New subcommand of the `agentos` CLI. Tails `bus.jsonl` for new `to_agent=codex` messages and appends them to a project-local `inbox_codex.md`.
 
-a. **`agentos bus-watch-codex`** subcommand: tail `bus.jsonl`, filter `to_agent=codex`, append new messages to `inbox_codex.md` (project-local, gitignored)
-b. **Codex turn-time workflow**: Codex's main session bootstrap reads `inbox_codex.md` if present, treats it as context, processes, writes reply to `bus.jsonl` with `from_agent="codex"`, truncates `inbox_codex.md` after handling
-c. **No true daemon** — Codex is interactive; queue processor is "next-turn handler"
-d. **No automatic trigger** — 用户 must press Enter to invoke Codex. This is the **1-Enter-press-per-cycle** tax
+**Storage layout** (under `G:/AgentOS/.agentos/`, all gitignored):
+```
+.agentos/
+  bus.jsonl                  # shared with OpenClaw sidecar + CLI
+  inbox_codex.md             # messages for Codex, Markdown digest
+  codex_last_id.txt          # cursor: last consumed message id
+```
 
-**Estimate**: ~30 min + tests
+**CLI shape**:
+```bash
+agentos bus-watch-codex
+  [--bus PATH]               # default: G:/AgentOS/.agentos/bus.jsonl
+  [--inbox PATH]             # default: G:/AgentOS/.agentos/inbox_codex.md
+  [--cursor PATH]            # default: G:/AgentOS/.agentos/codex_last_id.txt
+  [--once]                   # drain + exit (default: --watch)
+  [--watch]                  # poll loop with --poll-interval-s
+  [--poll-interval-s N]      # default: 5.0
+```
+
+**Inbox format** (Markdown, append-only):
+```markdown
+## msg-abc123def (2026-08-16T20:14:32+00:00)
+from: openclaw  to: codex  type: HANDOFF  priority: NORMAL
+artifact: (none)
+
+ADR-0012 骨架 ship, sections 1/2/5/6 you filled; 3/4/7 mine. 24h review.
+
+---
+## msg-def456ghi (2026-08-16T20:18:00+00:00)
+from: openclaw  to: codex  type: KNOWLEDGE_SHARE
+...
+```
+
+Each message becomes one `##` block. The `---` separator between messages is optional (every block is self-contained).
+
+**Cursor handling**:
+- On startup, read `codex_last_id.txt` (or empty if first run)
+- Call `bus.iter_messages(to_agent="codex", since_id=<cursor>)`
+- For each result, append to inbox + update cursor to that message's id
+- Atomic write: write to `<cursor>.tmp`, then rename (avoid partial state on crash)
+- On `import agentos` import or CLI startup, the bus is append-only so cursor never goes backwards
+
+#### 3.2 Codex turn-time workflow
+
+Codex's session bootstrap (when invoked by the user) checks for `inbox_codex.md`:
+
+```python
+# agentos_bootstrap.py (invoked by Codex session init or a system prompt addendum)
+from pathlib import Path
+
+inbox = Path(r"G:/AgentOS/.agentos/inbox_codex.md")
+if inbox.exists() and inbox.stat().st_size > 0:
+    print(f"[Codex] Pending bus messages in {inbox}")
+    # Treat as context for this turn's response
+    # ... Codex reasons + writes reply to bus ...
+    # ... then truncates inbox after handling ...
+```
+
+After Codex processes the inbox, it should:
+1. Write its reply to `bus.jsonl` via `agentos send --to openclaw --from codex --from-file <reply> --task t-xxx`
+2. Truncate `inbox_codex.md` (or rename to `processed/inbox_codex_<timestamp>.md` for audit)
+3. The cursor is already updated by `bus-watch-codex` (which runs on every Codex turn OR as a cron job)
+
+#### 3.3 No true daemon
+
+- Codex is interactive (sandbox / CLI app). `codex app-server daemon start` fails on Windows.
+- The queue processor **never replaces** the user's Enter press. It only:
+  - Drains bus into `inbox_codex.md` (can run as separate process or at session start)
+  - Provides context for Codex's next turn
+  - **Triggers Codex**: must be done by user, every cycle
+
+#### 3.4 No automatic trigger
+
+The **1-Enter tax** per cycle is **explicitly accepted** as the v0.2 ceiling. Reducing it to 0 requires D3 (Codex daemon) per Section 7.
+
+**Estimate**: ~30 min implementation + 8-10 tests (DONE in commit `c3ebb8c`'s `resolve_openclaw_token` pattern; same shape for `bus-watch-codex`).
+
+**Tests** (sketch):
+- `test_bus_watch_codex_appends_to_inbox`: mock bus, run once, assert inbox content matches
+- `test_bus_watch_codex_updates_cursor`: assert cursor advances
+- `test_bus_watch_codex_idempotent`: run twice, no duplicate writes
+- `test_bus_watch_codex_filters_by_to_agent`: messages not to codex ignored
+- `test_bus_watch_codex_includes_artifact_ref`: attachment path preserved
+- `test_bus_watch_codex_handles_empty_bus`: no crash
+- `test_bus_watch_codex_handles_missing_cursor_file`: starts from beginning
+- `test_bus_watch_codex_atomic_cursor_write`: simulates crash mid-write, verifies no partial state
+- `test_bus_watch_codex_format_with_long_content`: truncates / escapes correctly
+- `test_bus_watch_codex_format_with_unicode`: preserves emoji / CJK
+
 
 ### 4. Message Type Dispatch Matrix
 
-> *Codex fills (this section was skeleton-placeholder): per-type decision table*
+> *Filled by Codex 2026-08-16.*
 
-**Skeleton table** (Codex to expand):
+The BusLoop needs to know **which message types it listens to** and **how to route them**. The matrix below is the per-type decision table.
 
-| Message Type | BusLoop dispatch | Engine / Driver? | Reply type |
-|---|---|---|---|
-| TASK_REQUEST | Engine.run(DAG) | Yes | TASK_PROGRESS / TASK_ACCEPT / TASK_BLOCKED |
-| KNOWLEDGE_SHARE | Direct to agent session (no Engine) | No | (optional) KNOWLEDGE_SHARE |
-| REVIEW_REQUEST | Direct to agent session | No | KNOWLEDGE_SHARE with reviewed content |
-| HANDOFF | Direct to agent session (carries task context) | No | TASK_ACCEPT or TASK_REQUEST (re-dispatch) |
-| DECISION | Direct to agent session | No | DECISION |
-| TASK_PROGRESS / ACCEPT / BLOCKED | (no dispatch, terminal messages) | — | — |
+| Message Type | Sidecar BusLoop? | Dispatch path | Reply type | Notes |
+|---|---|---|---|---|
+| `TASK_REQUEST` | **Only the orchestrator sidecar** | `Engine.run(task_id, dag)` | `TASK_PROGRESS` (per stage) + `TASK_ACCEPT` (terminal) / `TASK_BLOCKED` (on error) | The only type the orchestrator consumes |
+| `TASK_PROGRESS` | **No** (terminal) | n/a (record in eval log only) | n/a | Generated by Engine, observed by requester |
+| `TASK_ACCEPT` | **No** (terminal) | n/a | n/a | Generated by Engine on completion |
+| `TASK_BLOCKED` | **No** (terminal) | n/a | n/a | Generated by Engine on error |
+| `KNOWLEDGE_SHARE` | **Yes** (both sidecars) | Inject into session as context (no Engine) | (optional) `KNOWLEDGE_SHARE` reply | Read-only broadcast; no work triggered |
+| `REVIEW_REQUEST` | **Yes** (target's sidecar) | Inject into session, **track as `pending_review_<msg_id>`** | `KNOWLEDGE_SHARE` containing review | Bidirectional: A asks, B answers, A tracks pending |
+| `HANDOFF` | **Yes** (target's sidecar) | Inject into session, **carries task context for resumption** | `TASK_ACCEPT` (continue) or `TASK_REQUEST` (re-dispatch new DAG) | Stage A finishes, hands to stage B |
+| `DECISION` | **Yes** (target's sidecar) | Inject into session as decision prompt | `DECISION` | Decision-making tasks; reply contains the choice + rationale |
 
+**Implementation rule** (per `BusLoop.__init__`):
+```python
+WATCH_TO_AGENT: str = "openclaw"  # or "codex"
+WATCH_MESSAGE_TYPES: list[str] = [
+    MessageType.KNOWLEDGE_SHARE.value,
+    MessageType.REVIEW_REQUEST.value,
+    MessageType.HANDOFF.value,
+    MessageType.DECISION.value,
+    MessageType.TASK_REQUEST.value,  # only if this sidecar is the orchestrator
+]
+```
+
+The **orchestrator sidecar** (only one per host) additionally listens for `TASK_REQUEST` and routes to `Engine.run()`. The **per-agent sidecars** (Codex, OpenClaw) only listen for the conversational / handoff types.
+
+**Default for v0.2**: one sidecar per agent (Codex + OpenClaw), one orchestrator sidecar (any host). Total: 3 sidecars in the dogfood demo.
+
+**Edge case**: a `TASK_REQUEST` sent to `to_agent=codex` (not `to_agent=orchestrator`) is **routed to Codex's session, not the orchestrator**. The sender is expected to use `to_agent=orchestrator` for orchestration; per-agent TASK_REQUESTs are treated as "please handle this directly" (Codex can either accept or re-dispatch).
+
+**Why not one giant matrix per type**: message types have different lifecycles. Some are terminal (Engine-generated, observed only), some are conversational (peer-to-peer), some trigger work. Treating them uniformly confuses the dispatcher.
 ### 5. First Dogfood Use Case
 
 > *OpenClaw fills (this section was skeleton-placeholder): the closed-loop test*
@@ -140,22 +244,41 @@ This section is non-negotiable transparency — must not be omitted in any ADR p
 
 ### 7. v0.2 → v0.3 Upgrade Conditions
 
-> *Codex fills (this section was skeleton-placeholder): trigger conditions for next iteration*
+> *Filled by Codex 2026-08-16.*
 
-**D3 unlocks when** (any of):
-- Codex CLI ships Windows daemon lifecycle implementation
-- Host migrates to Linux/macOS
-- Codex spawns a child process with persistent WS connection (third-party tooling)
+**D3 unlocks when any of the following is true** (per OpenClaw verify 2026-08-16: `codex app-server daemon` no Windows implementation):
 
-**Once D3 unlocks**: this ADR is superseded by ADR-0013 (true sidecar for both agents). D1 + D2 stay as fallback.
+1. **Codex CLI ships Windows daemon lifecycle** — today, `lifecycle is only supported on Unix platforms` is a hard error. Until that error message changes, D3 is permanently blocked on Windows.
+2. **Host migrates to Linux / macOS / WSL2** — then the existing daemon works. 30 min host migration, no code change.
+3. **Third-party tooling spawns Codex with persistent WS** — e.g., a process manager that wraps `codex exec` and holds a connection open across calls. Effectively a D3 polyfill. No upstream change needed.
 
----
+**Once D3 unlocks**, this ADR is **superseded by ADR-0013: True Sidecar for Both Agents**. D1 + D2 stay as fallback paths (degraded but functional).
 
+**Alternative paths if D3 is not on roadmap**:
+
+- **D4: `codex --server` mode** — if Codex CLI adds a server flag (HTTP listener + WebSocket). Not on roadmap as of 2026-08-16. Would unblock D3-equivalent.
+- **D5: Replace Codex with a daemon-able LLM** — lose the Codex-specific tooling (plan-only / session restore) but gain true autonomy. Trade-off; not recommended unless D3-D4 all blocked.
+- **D6: Heavyweight process supervisor** — NSSM / systemd / supervisord wrapping `codex exec`. Possible but fragile.
+
+**Decision criteria for D3 path**:
+- If Codex team ships Windows daemon in v0.x of Codex CLI — ADR-0013 supersedes 0012
+- If not, by 2026-Q4 reassess D4 / D5
+- D6 only as last resort (high operational cost)
+
+**Cost of staying at v0.2 indefinitely**: 1-Enter-per-cycle tax remains. This is **acceptable** for a v0.1/0.2 prototype but **blocks** production deployment where 24/7 autonomous operation is required.
+
+**Monitor**:
+- Track `codex app-server daemon` upstream releases (Codex CLI changelog)
+- Quarterly re-evaluate D3/D4/D5 based on Codex team roadmap
 ## Open Questions
 
-- How does OpenClaw's main session distinguish system-injected bus messages from user input? (Format must not be confused with user commands)
-- Where does `inbox_codex.md` live? Project-local? Per-Codex-session? User-global? (Codex to decide in section 3)
-- Do we need a `last_seen_message_id` per agent to avoid reprocessing? Or rely on `bus.jsonl` since_id filter?
+- **How does OpenClaw's main session distinguish system-injected bus messages from user input?** (Format must not be confused with user commands)
+  - *Codex note*: not my section to answer; deferred to OpenClaw's section 2.
+- **Where does `inbox_codex.md` live?** Project-local? Per-Codex-session? User-global?
+  - **Codex answer (section 3)**: project-local at `G:/AgentOS/.agentos/inbox_codex.md`. Rationale: bus is project-local (`G:/AgentOS/.agentos/bus.jsonl`), so the inbox follows the same root. Per-Codex-session would fragment context; user-global would couple unrelated projects.
+- **Do we need a `last_seen_message_id` per agent to avoid reprocessing? Or rely on `bus.jsonl` since_id filter?**
+  - **Codex answer (section 3.1)**: yes, use `codex_last_id.txt` cursor file + `bus.iter_messages(since_id=...)` filter. Justification: bus is append-only, can't "mark" messages as read. Cursor is the only reliable way to know "what's new for me". File-based cursor is simple, atomic (rename), and survives crashes.
+
 
 ## Consequences
 
