@@ -64,6 +64,22 @@ The Orchestrator `MemoryService.search()` (ADR-0005) fans out to all registered 
 - Driver `health_check()` returns tier alongside endpoint reachability, so misconfiguration is visible at startup.
 - ADR-0005 cross-encoder explicitly excludes empty drivers from normalization (`min_max_normalize` only sees non-empty results).
 
+
+## Scoring defaults (per OpenClaw reviewer suggestion, 2026-08-16)
+
+For tier=``real`` drivers, ``MemoryHit.score`` values are typically
+returned by the backend search. When a hit is missing ``score`` (or has
+an invalid / unparseable value), consumers should default to **0.5**
+(neutral, neither fully relevant nor fully irrelevant). This applies to:
+
+- ``OpenClawMemoryAdapter`` dict-to-``MemoryHit`` translation: ``float(entry.get("score", 0.5))``
+- ``MemoryService`` per-driver min-max normalize
+- Any future Real-tier driver adapter
+
+For tier=``empty`` drivers (Codex / Anthropic / Gemini public APIs in
+v0.1), the score field is irrelevant since hits are down-weighted to 0
+after normalize per the main decision.
+
 ## Alternatives Considered
 
 - **A. All agents treated as Real.** Forces every driver to ship a memory backend before it can integrate. Blocks Codex / Claude / Gemini from being useful in v0.1. Rejected.
