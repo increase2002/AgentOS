@@ -54,6 +54,7 @@ class BusWatcher:
         to_agent: str | None = None,
         from_agent: str | None = None,
         message_type: str | None = None,
+        message_types: list[str] | None = None,
         poll_interval_s: float = 1.0,
         from_start: bool = False,
     ) -> None:
@@ -66,8 +67,17 @@ class BusWatcher:
         handler:
             Callable invoked once per new message that passes the filters.
             Must not raise — wrap internally if needed.
-        to_agent / from_agent / message_type:
+        to_agent / from_agent:
             Optional filters. All AND-combined. ``None`` = no filter.
+        message_type:
+            Legacy single-type filter. ``None`` = no filter. DEPRECATED —
+            prefer ``message_types`` list (ADR-0012, v0.2). When both are
+            given, ``message_types`` wins.
+        message_types:
+            Optional list of message-type strings. Watcher passes messages
+            whose ``type`` field is in this list. ``None`` = no type filter.
+            Per ADR-0012: sidecars watch multiple types in one BusLoop
+            (e.g. KNOWLEDGE_SHARE + REVIEW_REQUEST + HANDOFF + TASK_REQUEST).
         poll_interval_s:
             Seconds between polls. Default 1.0 (hand-tuned for human ferry).
         from_start:
@@ -79,7 +89,13 @@ class BusWatcher:
         self.handler = handler
         self.to_agent = to_agent
         self.from_agent = from_agent
-        self.message_type = message_type
+        # Resolve deprecated `message_type` into new `message_types` list.
+        if message_types is not None:
+            self.message_types: list[str] | None = list(message_types)
+        elif message_type is not None:
+            self.message_types = [message_type]
+        else:
+            self.message_types = None
         self.poll_interval_s = poll_interval_s
         self._stop_event = threading.Event()
         self._offset = 0
@@ -110,7 +126,7 @@ class BusWatcher:
 
         logger.info(
             "watcher started: path=%s to=%s from=%s type=%s interval=%.2fs from_start=%s",
-            self.path, self.to_agent, self.from_agent, self.message_type,
+            self.path, self.to_agent, self.from_agent, self.message_types,
             self.poll_interval_s, self._from_start,
         )
         try:
@@ -210,7 +226,7 @@ class BusWatcher:
             return
         if self.from_agent is not None and rec.get("from_agent") != self.from_agent:
             return
-        if self.message_type is not None and rec.get("type") != self.message_type:
+        if self.message_types is not None and rec.get("type") not in self.message_types:
             return
 
         try:
