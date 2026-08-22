@@ -1,6 +1,6 @@
 # ADR-0012: Sidecar BusLoops + Agent Autonomy
 
-- **Status**: Proposed (skeleton — Codex to fill)
+- **Status**: Accepted (all 7 sections + bus loop dogfooded, ADR-0012 frozen as v0.2 architecture)
 - **Date**: 2026-08-16
 - **Deciders**: Codex, OpenClaw (龙大), Increase (老大)
 
