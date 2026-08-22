@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import signal
 import sys
 import uuid
@@ -116,6 +117,31 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Replay existing tail on startup (default: only new messages)",
     )
 
+    # bus-watch-codex (D1: Codex queue processor per ADR-0012 section 3)
+    p = sub.add_parser(
+        "bus-watch-codex",
+        help="Drain new to_agent=codex messages from bus.jsonl into inbox_codex.md",
+    )
+    p.add_argument("--inbox", type=Path,
+                   default=Path("G:/AgentOS/.agentos/inbox_codex.md"),
+                   help="Inbox Markdown file")
+    p.add_argument("--cursor", type=Path,
+                   default=Path("G:/AgentOS/.agentos/.openclaw_last_codex_id.txt"),
+                   help="Cursor file")
+    p.add_argument("--once", action="store_true", help="Drain once and exit (default: --watch)")
+    p.add_argument("--watch", action="store_true", help="Poll continuously")
+    p.add_argument("--poll-interval-s", type=float, default=5.0,
+                   help="Poll interval when --watch (default 5.0s)")
+
+    # bus-poll (D2 helper: OpenClaw sidecar tool per ADR-0012 section 2)
+    p = sub.add_parser(
+        "bus-poll",
+        help="Read new messages for a given agent (D2 sidecar tool)",
+    )
+    p.add_argument("--to", dest="to_agent", required=True,
+                   help="Agent to poll for (e.g. openclaw, codex)")
+    p.add_argument("--cursor", type=Path, required=True, help="Cursor file")
+    p.add_argument("--limit", type=int, default=20, help="Max messages to return (default 20)")
     return parser
 
 
@@ -335,6 +361,80 @@ def cmd_watch(args: argparse.Namespace) -> int:
     return 0
 
 
+def _read_cursor(path: Path) -> str | None:
+    if path.exists():
+        content = path.read_text(encoding="utf-8").strip()
+        return content or None
+    return None
+
+
+def _write_cursor_atomic(path: Path, last_id: str) -> None:
+    """Atomic cursor write: temp file + os.replace (avoid partial state on crash)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(last_id, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _format_inbox_block(rec: dict) -> str:
+    parts = [
+        f"## msg-{rec['id']} ({rec['created_at']})",
+        f"from: {rec['from_agent']}  to: {rec['to_agent']}  "
+        f"type: {rec['type']}  priority: {rec['priority']}",
+    ]
+    if rec.get("artifact_ref"):
+        parts.append(f"artifact: {rec['artifact_ref']}")
+    parts.append("")
+    payload = rec.get("payload", {})
+    if "text" in payload:
+        parts.append(payload["text"])
+    elif "content" in payload:
+        parts.append(f"[from {payload.get('file', '?')}]")
+        parts.append(payload["content"])
+    parts.append("")
+    return "\n".join(parts)
+
+
+def cmd_bus_watch_codex(args: argparse.Namespace) -> int:
+    """Drain new to_agent=codex messages from bus.jsonl into inbox_codex.md (ADR-0012 D1)."""
+    bus = JSONLBus(args.bus)
+    cursor_id = _read_cursor(args.cursor)
+    msgs = bus.to_agent("codex", since_id=cursor_id)
+    if not msgs:
+        print("[bus-watch-codex] no new messages")
+        return 0
+    inbox_text = "\n---\n".join(_format_inbox_block(m) for m in msgs) + "\n"
+    args.inbox.parent.mkdir(parents=True, exist_ok=True)
+    with args.inbox.open("a", encoding="utf-8") as f:
+        f.write(inbox_text)
+    _write_cursor_atomic(args.cursor, msgs[-1]["id"])
+    print(f"[bus-watch-codex] drained {len(msgs)} -> {args.inbox}")
+    print(f"[bus-watch-codex] cursor -> {msgs[-1]['id']}")
+    hook = JSONLHook()
+    for rec in msgs:
+        hook.record("bus_message_in", from_agent=rec.get("from_agent"),
+                    to_agent=rec.get("to_agent"),
+                    payload={"id": rec.get("id"), "type": rec.get("type")})
+    return 0
+
+
+def cmd_bus_poll(args: argparse.Namespace) -> int:
+    """Read new messages for an agent (D2 sidecar tool, ADR-0012 section 2)."""
+    bus = JSONLBus(args.bus)
+    cursor_id = _read_cursor(args.cursor)
+    msgs = bus.to_agent(args.to_agent, since_id=cursor_id)
+    if not msgs:
+        print(f"[bus-poll] {args.to_agent}: no new messages")
+        return 0
+    msgs = msgs[-args.limit:]
+    print(f"[bus-poll] {args.to_agent}: {len(msgs)} message(s)")
+    for rec in msgs:
+        print(_format_record(rec))
+        print()
+    _write_cursor_atomic(args.cursor, msgs[-1]["id"])
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -345,6 +445,8 @@ def main(argv: list[str] | None = None) -> int:
         "search": cmd_search,
         "inbox": cmd_inbox,
         "watch": cmd_watch,
+        "bus-watch-codex": cmd_bus_watch_codex,
+        "bus-poll": cmd_bus_poll,
     }
     return handlers[args.command](args)
 
