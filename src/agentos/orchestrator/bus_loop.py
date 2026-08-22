@@ -59,7 +59,14 @@ ORCHESTRATOR_AGENT_NAME = "orchestrator"
 
 
 class BusLoop:
-    """Background loop: tail bus, dispatch TASK_REQUEST to Engine."""
+    """Background loop: tail bus, dispatch matching messages to Engine.
+
+    Per ADR-0012 (v0.2), this loop is parameterised for sidecar use:
+    ``watch_to_agent`` accepts any agent name, and ``watch_message_types``
+    is a list so a single loop can watch multiple message types
+    (e.g. OpenClaw sidecar watches KNOWLEDGE_SHARE + REVIEW_REQUEST
+    + HANDOFF + TASK_REQUEST).
+    """
 
     def __init__(
         self,
@@ -67,13 +74,22 @@ class BusLoop:
         *,
         bus: JSONLBus | None = None,
         watch_to_agent: str = ORCHESTRATOR_AGENT_NAME,
-        watch_message_type: str = MessageType.TASK_REQUEST.value,
+        watch_message_types: list[str] | None = None,
+        watch_message_type: str | None = None,  # DEPRECATED alias (singular)
         poll_interval_s: float = 1.0,
     ) -> None:
         self.engine = engine
         self.bus = bus or JSONLBus()
         self.watch_to_agent = watch_to_agent
-        self.watch_message_type = watch_message_type
+        # Backward compat: default to single TASK_REQUEST (orchestrator mode).
+        # If watch_message_type (singular) was passed, use it.
+        # If watch_message_types (plural) was passed, use that list.
+        if watch_message_types is not None:
+            self.watch_message_types: list[str] = list(watch_message_types)
+        elif watch_message_type is not None:
+            self.watch_message_types = [watch_message_type]
+        else:
+            self.watch_message_types = [MessageType.TASK_REQUEST.value]
         self.poll_interval_s = poll_interval_s
         self._stop_event: asyncio.Event | None = None
 
@@ -86,7 +102,7 @@ class BusLoop:
             self.bus.path,
             self._handle_message,
             to_agent=self.watch_to_agent,
-            message_type=self.watch_message_type,
+            message_types=self.watch_message_types,
             poll_interval_s=self.poll_interval_s,
         )
         loop_task = asyncio.create_task(self._pump_stop(watcher))

@@ -6,11 +6,12 @@ Multi-agent collaboration OS that orchestrates external AI agents (OpenClaw, Cod
 
 ## Status
 
-**v0.1 shipped.** Protocol frozen (8 ADRs + 0010 + 0011 = 10 decisions). All four vendor drivers (OpenClaw / Codex / Claude / Gemini) work. Orchestrator Engine runs end-to-end (TASK_REQUEST on the bus -> DAG execute -> reply back). JSONL bus + agentos CLI dogfood loop validated.
+**v0.2 shipped.** Protocol frozen (11 ADRs). All four vendor drivers (OpenClaw / Codex / Anthropic / Gemini) work. Orchestrator Engine + Planner + Memory Service + Telemetry + JSONL Bus + `agentos` CLI all in place. ADR-0012 (Sidecar BusLoops + Agent Autonomy) Accepted — D1 `bus-watch-codex` and D2 `bus-poll` shipped.
 
-- **~150 tests passing** across 14 test modules
-- **~4000 LOC** across `src/agentos/`
+- **247 tests passing** across 18 test modules
+- **~4500 LOC** across `src/agentos/`
 - **2 demos**: `examples/demo_bus_loop.py` (Plan B full loop), `examples/demo_dogfood.py` (pure Engine 4-stage DAG + partial-success replay)
+- **1 working example**: `examples/c1_real_e2e.py` (MemoryService + OpenClaw real E2E)
 
 ## Architecture
 
@@ -19,33 +20,39 @@ User
   -> Web / API / CLI
   -> AgentOS Control Plane
      - Planner (LLM-driven, v0.2)
-     - Orchestrator Engine (DAG executor)
+     - Orchestrator Engine (DAG executor, BusLoop-driven)
      - Agent Manager / registry
-     - Memory Service (cross-agent federation)
-  -> A2A Communication Bus (JSONL append-only log)
+     - Memory Service (cross-agent federation per ADR-0005)
+     - Telemetry hook (JSONL append-only, per ADR-0004)
+  -> A2A Communication Bus (JSONL append-only log at G:/AgentOS/.agentos/bus.jsonl)
+  -> Sidecar BusLoops (per-agent listeners per ADR-0012)
   -> External Agents (OpenClaw / Codex / Claude / Gemini / ...)
   -> Tools Layer (Browser / Terminal / Git / Cloud / API)
 ```
 
-Data flow:
-1. **TASK_REQUEST** arrives on the bus (`G:/AgentOS/.agentos/bus.jsonl`).
-2. **Engine** picks it up, calls **Planner** to produce a `TaskDAG`.
-3. **DAGRunner** walks the DAG (topological + parallel_group), invoking each stage via the right **Driver**.
-4. **JSONLHook** records every driver call + bus event + stage transition to `G:/AgentOS/telemetry/{date}.jsonl`.
-5. **CheckpointStore** persists per-stage results so partial-success replays skip completed stages.
-6. **TASK_PROGRESS** + final **TASK_ACCEPT** go back on the bus.
+Data flow (per ADR-0012):
+1. `TASK_REQUEST` arrives on bus (`G:/AgentOS/.agentos/bus.jsonl`)
+2. Orchestrator BusLoop picks it up, calls `Engine.run(task_id, dag)`
+3. `Planner` (v0.2 LLM-driven) produces `TaskDAG`
+4. `DAGRunner` walks DAG topologically (parallel_group, Semaphore(4), retry+backoff)
+5. `Engine._dispatch_stage` calls `await driver.chat(brief, ...)` (with `tool_subset` enforced)
+6. `JSONLHook` records `DRIVER_CHAT_IN/OUT`, `STAGE_START/END`, `ERROR` to `G:/AgentOS/telemetry/{date}.jsonl`
+7. `CheckpointStore` persists per-stage results for partial-success replay
+8. `TASK_PROGRESS` (per stage) + `TASK_ACCEPT` (terminal) emitted back to bus
+9. Sidecar BusLoops (one per agent) poll bus for their own inbox, inject as system events
 
 ## Driver Matrix
 
 | Agent | Driver | Protocol |
 |---|---|---|
-| **OpenClaw** (chat) | `OpenClawDriver` (subclass of `OpenAIDriver`) | OpenAI-compatible HTTP Contract B (`/v1/chat/completions`); also has Contract A native WS gateway via `WSDriver` |
+| **OpenClaw** (chat) | `OpenClawDriver` (subclass of `OpenAIDriver`) | OpenAI-compatible HTTP Contract B (`/v1/chat/completions`) |
+| **OpenClaw** (node capabilities) | `WSDriver` | Native WebSocket gateway (Contract A) |
 | **Codex** | `CodexAdapter` | FastAPI wrapping Codex CLI subprocess (config-driven invocation) |
 | **Anthropic (Claude)** | `AnthropicDriver` | Anthropic Messages API native, format-converted at boundary |
 | **Google Gemini** | `GeminiDriver` | OpenAI-compatible endpoint (`/v1beta/openai/`) |
-| **Shared base** | `OpenAIDriver` | Reusable OpenAI-compatible chat driver (covers most agents) |
 
-All drivers expose `async chat(brief, attachments=None, session_key=None, tool_subset=None) -> ChatResult`. `tool_subset` enforces plan-only / read-only via system-prompt injection (ADR-0009 MVP).
+All drivers expose `async chat(brief, attachments=None, session_key=None, tool_subset=None) -> ChatResult`.
+`tool_subset` enforces plan-only / read-only via system-prompt injection (ADR-0009 MVP, soft constraint).
 
 ## Layout
 
@@ -61,12 +68,14 @@ src/agentos/
     base.py              # BaseMemoryDriver + MemoryHit + MemorySearchResult
     service.py           # MemoryService: fan-out + normalize + rerank
     rerank.py            # CrossEncoderReranker + GPT4oMiniReranker + NullReranker
-    empty_drivers.py     # Codex/Claude/Gemini Empty-tier (per ADR-0011)
+    openclaw_adapter.py  # Wraps OpenClawMemoryDriver for MemoryService consumption
+    empty_drivers.py     # EmptyMemoryDriver + Codex/Anthropic/Gemini (per ADR-0011)
+    openclaw_token.py    # resolve_openclaw_token() canonical-path helper
   drivers/
     base.py              # BaseDriver abstract + ChatResult + DriverError
     openai_driver.py     # OpenAI-compatible driver (tool_subset enforcement)
     ws_driver.py         # WebSocket driver for OpenClaw native gateway
-    openclaw_driver.py   # OpenClaw-specific subclass
+    openclaw_driver.py   # OpenClaw-specific subclass (auto-installs telemetry)
     openclaw_memory.py   # OpenClaw memory_search driver (MVP stub)
     openclaw_config.py   # Pydantic + JSON5 loader for openclaw.json
     codex_adapter.py     # Codex CLI subprocess wrapper
@@ -86,17 +95,17 @@ src/agentos/
     message.py           # Message + MessageType + Priority
     dag.py               # TaskDAG + DAGNode for Planner output
   cli.py                 # agentos CLI: send / receive / show / search / inbox
-  api/                   # (TBD) FastAPI routes + WebSocket events
-
-tests/                    # ~150 tests
-docs/
-  ADR/                    # 10 ADRs (0001-0011)
-  01-protocol-v0.1.md    # Frozen decision summary
-  02-bootstrap.md        # Setup + GitHub push pitfalls
-  03-dogfood-bus.md      # Bus dogfood workflow
+                         # / watch / bus-watch-codex / bus-poll
 examples/
-  demo_bus_loop.py        # Plan B end-to-end (TASK_REQUEST -> reply)
-  demo_dogfood.py         # Pure Engine 4-stage DAG + partial-success replay
+  demo_bus_loop.py       # Plan B full loop (TASK_REQUEST -> Engine -> reply)
+  demo_dogfood.py        # Pure Engine 4-stage DAG + partial-success replay
+  c1_real_e2e.py         # MemoryService + OpenClaw real backend E2E verification
+tests/                   # 247 tests across 18 modules
+docs/
+  ADR/                   # 11 ADRs (0001-0011)
+  01-protocol-v0.1.md   # Frozen decision summary
+  02-bootstrap.md       # Setup + GitHub push pitfalls
+  03-dogfood-bus.md     # Bus dogfood workflow
 ```
 
 ## Quick Start
@@ -114,18 +123,19 @@ Dogfooding the bus yourself: see [docs/03-dogfood-bus.md](docs/03-dogfood-bus.md
 
 ## Architecture Decision Records
 
-10 ADRs in `docs/ADR/`:
+11 ADRs in `docs/ADR/`:
 - [0001](docs/ADR/0001-integration-method.md) Integration Method (HTTP + OpenAI-compat)
 - [0002](docs/ADR/0002-context-handoff.md) Context Handoff (Artifact + summary, no history)
 - [0003](docs/ADR/0003-internal-sub-agents.md) Internal Sub-Agents (5 roles, code > small > flagship)
 - [0004](docs/ADR/0004-evaluation-loop.md) Evaluation Loop (multi-source signals, per-stage)
 - [0005](docs/ADR/0005-memory-federation.md) Memory Federation (fan-out + rerank, Plan B)
 - [0006](docs/ADR/0006-concurrency-streaming.md) Concurrency & Streaming (Budget=4, streaming=1 slot)
-- [0007](docs/ADR/0007-driver-failure-policy.md) Driver Failure Policy (fail-fast + retry, no auto-fallback)
+- [0007](docs/ADR/0007-driver-failure-policy.md) Driver Failure Policy (fail-fast + retry)
 - [0008](docs/ADR/0008-artifact-storage.md) Artifact Storage (local FS MVP)
 - [0009](docs/ADR/0009-tool-subset-enforcement.md) Tool Subset Enforcement (plan-only / read-only)
-- [0010](docs/ADR/0010-orchestrator-engine.md) Orchestrator Engine (Plan B accepted)
+- [0010](docs/ADR/0010-orchestrator-engine.md) Orchestrator Engine (Accepted 2026-07-26)
 - [0011](docs/ADR/0011-memory-backend-tiering.md) Memory Backend Tiering (Real / Synthetic / Empty)
+- [0012](docs/ADR/0012-sidecar-busloops-and-agent-autonomy.md) Sidecar BusLoops + Agent Autonomy (Accepted 2026-08-22)
 
 Frozen summary: [docs/01-protocol-v0.1.md](docs/01-protocol-v0.1.md).
 

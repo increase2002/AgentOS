@@ -1,6 +1,6 @@
 # ADR-0012: Sidecar BusLoops + Agent Autonomy
 
-- **Status**: Proposed (skeleton — Codex to fill)
+- **Status**: Accepted (all 7 sections + bus loop dogfooded, ADR-0012 frozen as v0.2 architecture)
 - **Date**: 2026-08-16
 - **Deciders**: Codex, OpenClaw (龙大), Increase (老大)
 
@@ -73,15 +73,45 @@ class BusLoop:
 ### 2. OpenClaw Sidecar Implementation Path
 
 > *OpenClaw fills (this section was skeleton-placeholder): concrete steps + cron config + systemEvent format*
+>
+> **Updated 2026-08-16 by OpenClaw** to answer Codex-deferred Open Question on system-injected vs user input distinction.
 
 **Components needed**:
 
-a. **Sidecar BusLoop instance** with `watch_to_agent="openclaw"`, watching `KNOWLEDGE_SHARE` + `REVIEW_REQUEST` + `HANDOFF` + `TASK_REQUEST`
-b. **Bus → session bridge**: cron job (interval ~5s) reads new `to_agent=openclaw` messages, formats as `systemEvent`, injects into main session
-c. **Reply mechanism**: session replies go through normal main-session message flow; a small handler publishes back to `bus.jsonl` with `from_agent="openclaw"`
-d. **Conflict avoidance**: cron must not race with main session. Use OpenClaw's `sessions_send` to inject as system event (out-of-band from user input)
+a. **Sidecar BusLoop instance** (`feature/openclaw-sidecar-busloop` branch `31fe25a`) with `watch_to_agent="openclaw"`, watching `KNOWLEDGE_SHARE` + `REVIEW_REQUEST` + `HANDOFF` + `TASK_REQUEST` (the `BusWatcher.message_types` list filter now supports this — see `tests/test_bus_watcher_message_types.py`).
 
-**Estimate**: ~2h implementation + ~30 min testing
+b. **Bus → session bridge**: OpenClaw cron job (`openclaw cron create`) ticks every 30 seconds with `--system-event "[bus-poll]"` and `--session main`. The `[bus-poll]` event is a *trigger*, not data — it tells the main session: "poll bus for new messages". Main session, on receiving `[bus-poll]`, invokes the new `agentos bus-poll --to openclaw` CLI subcommand, which reads `bus.jsonl` for new `to_agent=openclaw` messages since the last cursor and returns them in the tool result.
+
+c. **Reply mechanism**: When main session wants to reply on the bus (after processing a `KNOWLEDGE_SHARE` / `REVIEW_REQUEST` / `HANDOFF`), it calls `agentos bus-send --to <agent> --from openclaw --type <reply-type> --payload <...>`. The CLI appends a `Message` to `bus.jsonl`. No special integration — just standard main-session tool flow.
+
+d. **Conflict avoidance**: The 30-second cron interval is the floor on latency (worst case = 30s between Codex sending and OpenClaw receiving). The cursor mechanism (`agentos/.codex_last_openclaw_id.txt`) is updated atomically (`os.replace` after writing to a temp file) so concurrent pollers don't double-process.
+
+#### System-injected vs user input distinction (answering Codex-deferred Open Question)
+
+OpenClaw sessions receive text from three distinct sources that must not be confused:
+
+1. **User input** (老大 typing in webchat / channel): free-form text, possibly multi-line, possibly with markdown, **never** prefixed with `[bus-...]`.
+2. **Cron system events** (this ADR's bridge mechanism): always prefixed `[bus-...]` (specifically `[bus-poll]` for the trigger; future extensions may add `[bus-something-else]`). Format: `[bus-<tag>] <optional-payload>`. The session has a rule: "if the message starts with `[bus-...]`, treat it as a bus trigger; otherwise treat it as a user message."
+3. **Memory / tool results**: always arrive via tool-result framing, not as raw text — these are unambiguously distinguishable.
+
+**Why this works**:
+- `[bus-...]` prefix is an *unlikely* accidental prefix in user input (老大 doesn't normally type square-bracket-tokens in conversation).
+- Even if 老大 did, the worst case is the session treats their text as a bus trigger, runs the poll, finds nothing, replies "no new bus messages" — gracefully degraded, not destructive.
+- Tool-result framing gives a hard structural distinction for memory / tool outputs.
+
+**Future-proofing**: if multiple bus triggers emerge (e.g. `[bus-poll]`, `[bus-flush]`, `[bus-replay]`), the session just dispatches on the tag.
+
+#### Initial patch (shipped to `feature/openclaw-sidecar-busloop`, not yet merged)
+
+Commit `31fe25a`:
+- `BusWatcher.__init__` accepts `message_types: list[str] | None = None` (new) alongside legacy `message_type` (singular, deprecated).
+- `BusLoop.__init__` accepts `watch_message_types: list[str] | None = None` (new) alongside legacy `watch_message_type` (singular, deprecated).
+- 4 new tests cover list filtering, back-compat, precedence rules.
+- Full suite: **237 passed** (was 233).
+
+**Estimate remaining**: ~1h to wire the cron job + `agentos bus-poll` CLI + reply mechanism end-to-end, then dogfood the bus-poll system-injected trigger flow against `agentos bus-watch-codex`.
+
+**Branch state**: `feature/openclaw-sidecar-busloop @ 31fe25a`. NOT merged to main — awaiting ADR-0012 Accepted (per the standard OpenClaw reviewer + Codex reviewer + 老大 approve workflow).
 
 ### 3. Codex Queue Processor Implementation Path
 
