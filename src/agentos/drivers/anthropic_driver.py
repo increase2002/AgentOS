@@ -20,6 +20,7 @@ from typing import Any
 import httpx
 
 from agentos.drivers.base import BaseDriver, ChatResult, DriverError
+from agentos.telemetry.jsonl import install_telemetry
 
 
 class AnthropicDriver(BaseDriver):
@@ -45,6 +46,9 @@ class AnthropicDriver(BaseDriver):
             config.get("max_tokens", self.DEFAULT_MAX_TOKENS)
         )
         self.timeout_s: float = float(config.get("timeout_s", 60))
+        # ADR-0004: auto-wire telemetry hook so every chat() emits
+        # DRIVER_CHAT_IN/OUT events to G:/AgentOS/telemetry/{date}.jsonl.
+        install_telemetry(self)
 
     def _build_system_prompt(
         self, tool_subset: list[str] | None
