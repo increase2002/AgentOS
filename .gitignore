@@ -37,8 +37,7 @@ artifacts/
 
 # AgentOS runtime state (NOT source)
 .agentos/
-	elemetry/
-.agentos/
+telemetry/
 
 # pytest temp dirs (one per run)
 .pytest-tmp/
