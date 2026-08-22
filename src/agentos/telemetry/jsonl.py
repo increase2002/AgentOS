@@ -173,6 +173,10 @@ class JSONLHook:
         hook = self
         driver_name = type(driver).__name__
         is_async = inspect.iscoroutinefunction(driver.chat)
+        # Capture the original chat callable at wrap time so we can call it
+        # directly without re-resolving ``driver.chat`` (which may have been
+        # replaced on the instance, e.g. by install_telemetry re-wrapping).
+        original_chat = driver.chat
 
         class _WrappedDriver:
             def __init__(self_inner) -> None:
@@ -188,7 +192,7 @@ class JSONLHook:
                     payload={"brief": brief, "tool_subset": tool_subset},
                 )
                 try:
-                    result = await self_inner._driver.chat(
+                    result = await original_chat(
                         brief,
                         attachments=attachments,
                         session_key=session_key,
@@ -227,7 +231,7 @@ class JSONLHook:
                     payload={"brief": brief, "tool_subset": tool_subset},
                 )
                 try:
-                    result = self_inner._driver.chat(
+                    result = original_chat(
                         brief,
                         attachments=attachments,
                         session_key=session_key,

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from agentos.drivers import install_telemetry
 from agentos.drivers.openai_driver import OpenAIDriver
 from agentos.schemas.a2a import RESERVED_SESSION_PREFIXES
 
@@ -75,6 +76,10 @@ class OpenClawDriver(OpenAIDriver):
         self.session_key_strategy: str = config.get(
             "session_key_strategy", "explicit"
         )
+        # ADR-0004: auto-wire telemetry hook so every chat() emits
+        # DRIVER_CHAT_IN/OUT events to G:/AgentOS/telemetry/{date}.jsonl.
+        # Honors AGENTOS_TELEMETRY=off; idempotent under repeated construction.
+        install_telemetry(self)
 
     @staticmethod
     def validate_session_key(session_key: str | None) -> None:

@@ -26,6 +26,7 @@ from agentos.drivers.openclaw_driver import (
     DEFAULT_MODEL,
     OpenClawDriver,
 )
+from agentos.drivers import install_telemetry
 from agentos.drivers.openclaw_memory import (
     OpenClawMemoryDriver,
 )
@@ -245,4 +246,93 @@ def test_load_openclaw_config_from_real_file(tmp_path: Path) -> None:
 def test_openclaw_config_contract_b_url() -> None:
     cfg = parse_openclaw_config(_sample_openclaw_json())
     assert cfg.contract_b_url() == "http://127.0.0.1:18789/v1"
-    assert cfg.contract_b_url(host="100.64.0.1") == "http://100.64.0.1:18789/v1"
+    assert cfg.contract_b_url(host="100.64.0.1") == "http://100.64.0.1:18789/v1"# ---------------------------------------------------------------------------
+# Telemetry integration (ADR-0004 data path)
+# ---------------------------------------------------------------------------
+
+
+def test_install_telemetry_wraps_openclaw_driver_on_construction(monkeypatch) -> None:
+    """OpenClawDriver.__init__ auto-wires telemetry via install_telemetry."""
+    # conftest sets AGENTOS_TELEMETRY=off by default; opt back in for this test.
+    monkeypatch.setenv("AGENTOS_TELEMETRY", "on")
+    driver = OpenClawDriver("oc-tel", {"api_key": "tok"})
+    assert getattr(driver, "_agentos_telemetry_wrapped", False) is True
+
+
+def test_install_telemetry_disabled_by_env(monkeypatch) -> None:
+    """AGENTOS_TELEMETRY=off skips wrapping; is_telemetry_enabled reports it."""
+    from agentos.drivers import install_telemetry as it
+    from agentos.telemetry.jsonl import is_telemetry_enabled
+
+    monkeypatch.setenv("AGENTOS_TELEMETRY", "off")
+    assert is_telemetry_enabled() is False
+
+    class _Stub:
+        async def chat(self_inner, brief, *, attachments=None, session_key=None, tool_subset=None):
+            from agentos.drivers.base import ChatResult
+            return ChatResult(content="ok", metadata={})
+
+    s = _Stub()
+    installed = it(s, hook=None)
+    assert installed is False
+    assert not getattr(s, "_agentos_telemetry_wrapped", False)
+
+
+def test_install_telemetry_is_idempotent(tmp_path, monkeypatch) -> None:
+    """Second call on the same driver is a no-op (sentinel guard)."""
+    from agentos.telemetry.jsonl import JSONLHook
+
+    monkeypatch.setenv("AGENTOS_TELEMETRY", "on")
+
+    class _Stub:
+        async def chat(self_inner, brief, *, attachments=None, session_key=None, tool_subset=None):
+            from agentos.drivers.base import ChatResult
+            return ChatResult(content="ok", metadata={})
+
+    s = _Stub()
+    hook = JSONLHook(base_dir=tmp_path, enabled=True)
+    first = install_telemetry(s, hook=hook)
+    second = install_telemetry(s, hook=hook)
+    assert first is True
+    assert second is False
+    assert s._agentos_telemetry_wrapped is True
+
+
+def test_install_telemetry_records_in_and_out_events(tmp_path, monkeypatch) -> None:
+    """A chat() call writes DRIVER_CHAT_IN + DRIVER_CHAT_OUT to today's JSONL."""
+    import asyncio
+    import json
+    from datetime import date
+
+    from agentos.telemetry.jsonl import JSONLHook
+
+    monkeypatch.setenv("AGENTOS_TELEMETRY", "on")
+
+    class _Stub:
+        def __init__(self_inner):
+            self_inner.name = "stub"
+
+        async def chat(self_inner, brief, *, attachments=None, session_key=None, tool_subset=None):
+            from agentos.drivers.base import ChatResult
+            return ChatResult(
+                content="hello world",
+                metadata={"k": 1},
+                usage={"in": 5, "out": 7},
+            )
+
+    stub = _Stub()
+    hook = JSONLHook(base_dir=tmp_path, enabled=True)
+    install_telemetry(stub, hook=hook)
+    asyncio.run(stub.chat("ping", session_key="task:t1:stage:s1"))
+
+    log = tmp_path / f"{date.today().isoformat()}.jsonl"
+    assert log.exists()
+    events = [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines() if l.strip()]
+    types = [e["event_type"] for e in events]
+    assert types == ["driver_chat_in", "driver_chat_out"]
+    assert events[0]["session_key"] == "task:t1:stage:s1"
+    assert events[0]["driver"] == "_Stub"
+    assert events[0]["payload"]["brief"] == "ping"
+    assert events[1]["metadata"]["token_usage"] == {"in": 5, "out": 7}
+    assert "latency_ms" in events[1]["metadata"]
+
