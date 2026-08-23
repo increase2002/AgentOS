@@ -315,3 +315,212 @@ def test_end_to_end_hook_to_consumer(tmp_path: Path, monkeypatch) -> None:
 
     latency = consumer.latency_stats()
     assert latency["OpenClawDriver"]["avg_ms"] == 200
+
+def test_score_empty_data_returns_zero(tmp_path) -> None:
+    """No events -> all drivers at score 0.0 with sample_size 0."""
+    from agentos.telemetry.consumer import TelemetryConsumer
+    c = TelemetryConsumer(base_path=tmp_path)
+    scores = c.score()
+    assert scores == {}
+
+
+def test_score_perfect_driver(tmp_path) -> None:
+    """All success + under latency budget -> high score (signal 1.0 across)."""
+    import json
+    from datetime import date
+    from agentos.telemetry.jsonl import TelemetryEventType
+
+    path = tmp_path / f"{date.today().isoformat()}.jsonl"
+    rows = []
+    for i in range(10):
+        rows.append(json.dumps({
+            "event_type": TelemetryEventType.DRIVER_CHAT_OUT.value,
+            "timestamp": "2026-08-22T12:00:00+00:00",
+            "session_key": f"task:t{i}",
+            "driver": "OpenClawDriver",
+            "from_agent": None, "to_agent": None,
+            "payload": {},
+            "metadata": {"latency_ms": 1000, "token_usage": {"in": 100, "out": 50}},
+        }))
+    path.write_text("\n".join(rows), encoding="utf-8")
+
+    from agentos.telemetry.consumer import TelemetryConsumer
+    scores = TelemetryConsumer(base_path=tmp_path).score(latency_budget_ms=5000)
+    s = scores["OpenClawDriver"]
+    assert s["sample_size"] == 10
+    assert s["signals"]["success_rate"] == 1.0
+    assert s["signals"]["latency_health"] == 1.0
+    assert s["signals"]["activity"] == 1.0  # only driver, log10(11)/log10(11)
+    assert s["score"] == 1.0
+
+
+def test_score_with_errors_drops_success_rate(tmp_path) -> None:
+    """Errors reduce success_rate linearly; latency + activity still high."""
+    import json
+    from datetime import date
+    from agentos.telemetry.jsonl import TelemetryEventType
+
+    path = tmp_path / f"{date.today().isoformat()}.jsonl"
+    rows = []
+    # 7 OUT + 3 ERROR = 70% success rate
+    for i in range(7):
+        rows.append(json.dumps({
+            "event_type": TelemetryEventType.DRIVER_CHAT_OUT.value,
+            "timestamp": "2026-08-22T12:00:00+00:00",
+            "session_key": f"task:t{i}",
+            "driver": "OpenClawDriver",
+            "from_agent": None, "to_agent": None,
+            "payload": {},
+            "metadata": {"latency_ms": 1000},
+        }))
+    for i in range(3):
+        rows.append(json.dumps({
+            "event_type": TelemetryEventType.ERROR.value,
+            "timestamp": "2026-08-22T12:00:01+00:00",
+            "session_key": f"task:e{i}",
+            "driver": "OpenClawDriver",
+            "from_agent": None, "to_agent": None,
+            "payload": {"error": "timeout"},
+            "metadata": {},
+        }))
+    path.write_text("\n".join(rows), encoding="utf-8")
+
+    from agentos.telemetry.consumer import TelemetryConsumer
+    scores = TelemetryConsumer(base_path=tmp_path).score(latency_budget_ms=5000)
+    s = scores["OpenClawDriver"]
+    assert s["sample_size"] == 10
+    assert s["signals"]["success_rate"] == 0.7
+    assert s["signals"]["latency_health"] == 1.0
+    assert round(s["score"], 4) == round((0.7 + 1.0 + 1.0) / 3.0, 4)
+
+
+def test_score_latency_budget_exceeded(tmp_path) -> None:
+    """All OUT events over budget -> latency_health drops to 0."""
+    import json
+    from datetime import date
+    from agentos.telemetry.jsonl import TelemetryEventType
+
+    path = tmp_path / f"{date.today().isoformat()}.jsonl"
+    rows = []
+    for i in range(5):
+        rows.append(json.dumps({
+            "event_type": TelemetryEventType.DRIVER_CHAT_OUT.value,
+            "timestamp": "2026-08-22T12:00:00+00:00",
+            "session_key": f"task:t{i}",
+            "driver": "SlowDriver",
+            "from_agent": None, "to_agent": None,
+            "payload": {},
+            "metadata": {"latency_ms": 10000},  # way over 5000ms budget
+        }))
+    path.write_text("\n".join(rows), encoding="utf-8")
+
+    from agentos.telemetry.consumer import TelemetryConsumer
+    scores = TelemetryConsumer(base_path=tmp_path).score(latency_budget_ms=5000)
+    s = scores["SlowDriver"]
+    assert s["signals"]["latency_health"] == 0.0
+    # success_rate = 1.0, latency = 0, activity = 1.0 (only driver) -> 0.6667
+    assert round(s["score"], 4) == round((1.0 + 0.0 + 1.0) / 3.0, 4)
+
+
+def test_score_empty_data_returns_zero(tmp_path) -> None:
+    """No events -> all drivers at score 0.0 with sample_size 0."""
+    from agentos.telemetry.consumer import TelemetryConsumer
+    c = TelemetryConsumer(base_path=tmp_path)
+    scores = c.score()
+    assert scores == {}
+
+
+def test_score_perfect_driver(tmp_path) -> None:
+    """All success + under latency budget -> high score (signal 1.0 across)."""
+    import json
+    from datetime import date
+    from agentos.telemetry.jsonl import TelemetryEventType
+
+    path = tmp_path / f"{date.today().isoformat()}.jsonl"
+    rows = []
+    for i in range(10):
+        rows.append(json.dumps({
+            "event_type": TelemetryEventType.DRIVER_CHAT_OUT.value,
+            "timestamp": "2026-08-22T12:00:00+00:00",
+            "session_key": f"task:t{i}",
+            "driver": "OpenClawDriver",
+            "from_agent": None, "to_agent": None,
+            "payload": {},
+            "metadata": {"latency_ms": 1000, "token_usage": {"in": 100, "out": 50}},
+        }))
+    path.write_text("\n".join(rows), encoding="utf-8")
+
+    from agentos.telemetry.consumer import TelemetryConsumer
+    scores = TelemetryConsumer(base_path=tmp_path).score(latency_budget_ms=5000)
+    s = scores["OpenClawDriver"]
+    assert s["sample_size"] == 10
+    assert s["signals"]["success_rate"] == 1.0
+    assert s["signals"]["latency_health"] == 1.0
+    assert s["signals"]["activity"] == 1.0
+    assert s["score"] == 1.0
+
+
+def test_score_with_errors_drops_success_rate(tmp_path) -> None:
+    """Errors reduce success_rate linearly; latency + activity still high."""
+    import json
+    from datetime import date
+    from agentos.telemetry.jsonl import TelemetryEventType
+
+    path = tmp_path / f"{date.today().isoformat()}.jsonl"
+    rows = []
+    for i in range(7):
+        rows.append(json.dumps({
+            "event_type": TelemetryEventType.DRIVER_CHAT_OUT.value,
+            "timestamp": "2026-08-22T12:00:00+00:00",
+            "session_key": f"task:t{i}",
+            "driver": "OpenClawDriver",
+            "from_agent": None, "to_agent": None,
+            "payload": {},
+            "metadata": {"latency_ms": 1000},
+        }))
+    for i in range(3):
+        rows.append(json.dumps({
+            "event_type": TelemetryEventType.ERROR.value,
+            "timestamp": "2026-08-22T12:00:01+00:00",
+            "session_key": f"task:e{i}",
+            "driver": "OpenClawDriver",
+            "from_agent": None, "to_agent": None,
+            "payload": {"error": "timeout"},
+            "metadata": {},
+        }))
+    path.write_text("\n".join(rows), encoding="utf-8")
+
+    from agentos.telemetry.consumer import TelemetryConsumer
+    scores = TelemetryConsumer(base_path=tmp_path).score(latency_budget_ms=5000)
+    s = scores["OpenClawDriver"]
+    assert s["sample_size"] == 10
+    assert s["signals"]["success_rate"] == 0.7
+    assert s["signals"]["latency_health"] == 1.0
+    assert round(s["score"], 4) == round((0.7 + 1.0 + 1.0) / 3.0, 4)
+
+
+def test_score_latency_budget_exceeded(tmp_path) -> None:
+    """All OUT events over budget -> latency_health drops to 0."""
+    import json
+    from datetime import date
+    from agentos.telemetry.jsonl import TelemetryEventType
+
+    path = tmp_path / f"{date.today().isoformat()}.jsonl"
+    rows = []
+    for i in range(5):
+        rows.append(json.dumps({
+            "event_type": TelemetryEventType.DRIVER_CHAT_OUT.value,
+            "timestamp": "2026-08-22T12:00:00+00:00",
+            "session_key": f"task:t{i}",
+            "driver": "SlowDriver",
+            "from_agent": None, "to_agent": None,
+            "payload": {},
+            "metadata": {"latency_ms": 10000},
+        }))
+    path.write_text("\n".join(rows), encoding="utf-8")
+
+    from agentos.telemetry.consumer import TelemetryConsumer
+    scores = TelemetryConsumer(base_path=tmp_path).score(latency_budget_ms=5000)
+    s = scores["SlowDriver"]
+    assert s["signals"]["latency_health"] == 0.0
+    assert round(s["score"], 4) == round((1.0 + 0.0 + 1.0) / 3.0, 4)

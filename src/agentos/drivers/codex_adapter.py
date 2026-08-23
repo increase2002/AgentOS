@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from agentos.drivers.base import BaseDriver, ChatResult, DriverError
+from agentos.telemetry.jsonl import install_telemetry
 
 
 # Type alias for the injectable subprocess runner. Default impl is below.
@@ -77,6 +78,9 @@ class CodexAdapter(BaseDriver):
         self._runner: ProcessRunner = config.get(
             "process_runner", _default_process_runner
         )
+        # ADR-0004: auto-wire telemetry hook so every chat() emits
+        # DRIVER_CHAT_IN/OUT events to G:/AgentOS/telemetry/{date}.jsonl.
+        install_telemetry(self)
 
     async def chat(
         self,

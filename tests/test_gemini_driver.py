@@ -57,3 +57,10 @@ def test_gemini_driver_inherits_tool_subset() -> None:
     msgs = g._build_messages("hi", tool_subset=[])
     assert msgs[0]["role"] == "system"
     assert "plan-only" in msgs[0]["content"].lower()
+
+
+def test_gemini_driver_auto_wraps_telemetry(monkeypatch) -> None:
+    """ADR-0004: GeminiDriver auto-wires telemetry on construction."""
+    monkeypatch.setenv("AGENTOS_TELEMETRY", "on")
+    g = GeminiDriver("g", {"api_key": "k"})
+    assert getattr(g, "_agentos_telemetry_wrapped", False) is True

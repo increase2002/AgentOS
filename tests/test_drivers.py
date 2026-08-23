@@ -6,6 +6,7 @@ import pytest
 
 from agentos.drivers import OpenAIDriver, WSDriver
 from agentos.drivers.base import BaseDriver, ChatResult, DriverError
+from agentos.drivers.codex_adapter import CodexAdapter
 
 
 def test_openaidriver_requires_config() -> None:
@@ -87,3 +88,10 @@ def test_build_messages_with_attachments_and_tools() -> None:
     assert msgs[1] == {"role": "user", "content": "process this"}
     assert "report.md" in msgs[2]["content"]
     assert "# Title" in msgs[2]["content"]
+
+
+def test_codex_adapter_auto_wraps_telemetry(monkeypatch) -> None:
+    """ADR-0004: CodexAdapter auto-wires telemetry on construction."""
+    monkeypatch.setenv("AGENTOS_TELEMETRY", "on")
+    c = CodexAdapter("c", {})
+    assert getattr(c, "_agentos_telemetry_wrapped", False) is True

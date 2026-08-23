@@ -150,3 +150,10 @@ async def test_anthropic_driver_no_system_when_no_tool_subset() -> None:
 @pytest.mark.asyncio
 async def test_anthropic_driver_health_check() -> None:
     assert await AnthropicDriver("test", {"api_key": "sk-test"}).health_check() is True
+
+
+def test_anthropic_driver_auto_wraps_telemetry(monkeypatch) -> None:
+    """ADR-0004: AnthropicDriver auto-wires telemetry on construction."""
+    monkeypatch.setenv("AGENTOS_TELEMETRY", "on")
+    d = AnthropicDriver("a", {"api_key": "k"})
+    assert getattr(d, "_agentos_telemetry_wrapped", False) is True

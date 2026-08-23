@@ -24,9 +24,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from agentos.drivers import install_telemetry
 from agentos.drivers.openai_driver import OpenAIDriver
 from agentos.schemas.a2a import RESERVED_SESSION_PREFIXES
+from agentos.telemetry.jsonl import install_telemetry
 
 if TYPE_CHECKING:  # pragma: no cover
     pass

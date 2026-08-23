@@ -224,3 +224,76 @@ class TelemetryConsumer:
                 "avg_ms": sum(lats) // len(lats),
             }
         return out
+
+    # ----------------------------------------------------------------- score
+
+    def score(
+        self,
+        *,
+        date: date | None = None,
+        latency_budget_ms: int = 5000,
+    ) -> dict[str, dict[str, Any]]:
+        """Per-driver composite score from multi-source signals (ADR-0004).
+
+        Aggregates the day's driver events into a 0-1 score per driver using
+        three signals (all weighted equally):
+
+        1. **Success rate** — ``DRIVER_CHAT_OUT`` count vs ``ERROR`` count.
+           A driver with 9 OUT + 1 ERROR = 0.9 success rate.
+        2. **Latency health** — fraction of OUT events whose ``latency_ms``
+           is at or below ``latency_budget_ms``. Default budget 5000ms.
+        3. **Activity** — soft log-scale bonus so silent drivers don't
+           unfairly score zero on tiny samples. Uses
+           ``log10(1 + out_count) / log10(1 + max_out_count)``.
+
+        Returns ``{driver_name: {score, signals, sample_size}}``.
+        Sample size 0 -> score 0.0 (no data, no signal).
+        """
+        events = self.list_events(date=date)
+        # Bucket events per driver
+        out_count: Counter[str] = Counter()
+        err_count: Counter[str] = Counter()
+        in_latencies: dict[str, list[int]] = {}
+        for e in events:
+            if e.event_type == TelemetryEventType.DRIVER_CHAT_OUT:
+                drv = e.driver or "(none)"
+                out_count[drv] += 1
+                lat = e.metadata.get("latency_ms")
+                if isinstance(lat, (int, float)):
+                    in_latencies.setdefault(drv, []).append(int(lat))
+            elif e.event_type == TelemetryEventType.ERROR:
+                err_count[e.driver or "(none)"] += 1
+
+        drivers = set(out_count) | set(err_count)
+        max_out = max(out_count.values(), default=0)
+        scores: dict[str, dict[str, Any]] = {}
+        for drv in sorted(drivers):
+            outs = out_count.get(drv, 0)
+            errs = err_count.get(drv, 0)
+            if outs == 0 and errs == 0:
+                scores[drv] = {"score": 0.0, "signals": {}, "sample_size": 0}
+                continue
+            total = outs + errs
+            success_rate = (outs / total) if total else 0.0
+            lats = in_latencies.get(drv, [])
+            if lats:
+                under_budget = sum(1 for x in lats if x <= latency_budget_ms)
+                latency_health = under_budget / len(lats)
+            else:
+                latency_health = 0.5  # unknown -> neutral
+            if max_out > 0:
+                import math
+                activity = math.log10(1 + outs) / math.log10(1 + max_out)
+            else:
+                activity = 0.0
+            composite = (success_rate + latency_health + activity) / 3.0
+            scores[drv] = {
+                "score": round(composite, 4),
+                "signals": {
+                    "success_rate": round(success_rate, 4),
+                    "latency_health": round(latency_health, 4),
+                    "activity": round(activity, 4),
+                },
+                "sample_size": total,
+            }
+        return scores

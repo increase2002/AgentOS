@@ -286,6 +286,56 @@ class JSONLHook:
         return _wrapped
 
 
+# --------------------------------------------------------------------------- #
+# Driver integration helper (ADR-0004 data path)
+# --------------------------------------------------------------------------- #
+
+def install_telemetry(
+    driver: Any,
+    *,
+    hook: "JSONLHook | None" = None,
+) -> bool:
+    """Wire telemetry around ``driver.chat`` in place (ADR-0004).
+
+    Replaces ``driver.chat`` with the JSONL-wrapped equivalent so every call
+    emits ``DRIVER_CHAT_IN`` / ``DRIVER_CHAT_OUT`` (or ``ERROR``) events to
+    ``G:/AgentOS/telemetry/{date}.jsonl``. Respects the
+    ``AGENTOS_TELEMETRY=off`` env var (via ``is_telemetry_enabled``).
+
+    Idempotent: a second call on the same driver is a no-op (detected via
+    the ``_agentos_telemetry_wrapped`` sentinel attribute set on the driver).
+
+    Args:
+        driver: Any object whose ``chat(brief, *, attachments, session_key,
+            tool_subset)`` matches the :class:`BaseDriver` contract. The driver
+            does **not** need to subclass :class:`BaseDriver` strictly — the
+            helper only uses duck-typed attribute access.
+        hook: Optional pre-built :class:`JSONLHook` (used by tests). When
+            ``None``, the module-level ``default_hook()`` singleton is used.
+
+    Returns:
+        ``True`` if telemetry was installed, ``False`` if skipped (disabled
+        by env or already wrapped).
+
+    Note:
+        Lives in :mod:`agentos.telemetry.jsonl` (not in
+        :mod:`agentos.drivers`) to avoid a circular import — driver
+        constructors run while :mod:`agentos.drivers` is still being
+        initialized, so the package-level import would fail.
+    """
+    if not is_telemetry_enabled():
+        return False
+    if getattr(driver, "_agentos_telemetry_wrapped", False):
+        return False
+    wrapped = (hook or default_hook()).wrap_driver(driver)
+    # Replace the instance attribute (shadows the class method) so existing
+    # callers using ``driver.chat(...)`` get telemetry without touching
+    # call sites.
+    driver.chat = wrapped.chat  # type: ignore[assignment]
+    driver._agentos_telemetry_wrapped = True  # type: ignore[attr-defined]
+    return True
+
+
 def _preview(text: str, limit: int = 200) -> str:
     """Truncate text for telemetry payload (avoid huge JSONL files)."""
     if not text:
@@ -319,5 +369,6 @@ __all__ = [
     "TelemetryEvent",
     "TelemetryEventType",
     "default_hook",
+    "install_telemetry",
     "is_telemetry_enabled",
 ]

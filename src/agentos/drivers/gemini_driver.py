@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import Any
 
 from agentos.drivers.openai_driver import OpenAIDriver
+from agentos.telemetry.jsonl import install_telemetry
 
 
 class GeminiDriver(OpenAIDriver):
@@ -36,6 +37,8 @@ class GeminiDriver(OpenAIDriver):
             **config,
         }
         super().__init__(name, merged)
+        # ADR-0004: see agents/drivers/openclaw_driver.py for rationale.
+        install_telemetry(self)
 
     async def health_check(self) -> bool:
         """Verify the Gemini endpoint is reachable.
