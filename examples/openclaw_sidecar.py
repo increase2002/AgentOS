@@ -59,7 +59,7 @@ import os
 import signal
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -177,6 +177,48 @@ def _build_brief(msg: Message) -> str:
     )
 
 
+def _parse_agent_tokens(spec: str) -> dict[str, str]:
+    """Parse ``"agent1:tok1,agent2:tok2"`` into a dict.
+
+    Empty / whitespace-only segments are ignored. Used by the CLI to
+    convert ``--auth-tokens`` and by env-var loading.
+    """
+    out: dict[str, str] = {}
+    for part in (spec or "").split(","):
+        part = part.strip()
+        if not part or ":" not in part:
+            continue
+        agent, _, token = part.partition(":")
+        agent = agent.strip()
+        token = token.strip()
+        if agent and token:
+            out[agent] = token
+    return out
+
+
+def _verify_auth(msg: Message, expected: dict[str, str]) -> bool:
+    """Return True if the message is authenticated for its ``from_agent``.
+
+    Gate is opt-in: when ``expected`` is empty, every message passes.
+    Otherwise ``msg.payload["auth_token"]`` must equal
+    ``expected[msg.from_agent]`` exactly (string compare). Mismatch is
+    logged + rejected (not surfaced on the bus to avoid leaking the
+    expected token to a hostile sender).
+    """
+    if not expected:
+        return True
+    actual = (msg.payload or {}).get("auth_token")
+    want = expected.get(msg.from_agent)
+    if want is None:
+        # Sender has no registered token; allow through so bootstrap /
+        # unconfigured agents aren't blocked. Operators should populate
+        # the table before relying on auth.
+        return True
+    if not isinstance(actual, str) or actual != want:
+        return False
+    return True
+
+
 # --------------------------------------------------------------------------- #
 # Dispatch table (ADR-0013 prep): route msg.to_agent -> LLM backend
 # --------------------------------------------------------------------------- #
@@ -194,11 +236,17 @@ class DispatchContext:
 
     Concurrency gating (semaphore) and error containment live in
     ``_handle_message`` so dispatchers stay focused on their LLM backend.
+
+    ``agent_tokens`` is the per-agent auth gate (ADR-0007). Keys are
+    ``from_agent`` names; values are the shared secret each agent must
+    echo in ``msg.payload["auth_token"]``. Empty dict disables the gate
+    (back-compat with v0.2 messages).
     """
 
     openclaw_driver: Any | None = None
     codex_adapter: Any | None = None
     dry_run: bool = False
+    agent_tokens: dict[str, str] = field(default_factory=dict)
 
 
 # Type alias for a dispatcher function.
@@ -340,6 +388,12 @@ async def _handle_message(
     bucket short-circuits before any LLM call — we reply with a
     [RATE_LIMITED] HANDOFF and the sender can back off instead of us
     paying for a costly 429 from the provider.
+
+    Auth gate (ADR-0007) runs after the rate-limit gate: if
+    ``ctx.agent_tokens`` has a token for ``msg.from_agent``, the message
+    must carry a matching ``payload["auth_token"]`` or it is dropped
+    silently (logged WARN). Failure is not surfaced on the bus to avoid
+    leaking expected-token info to a hostile sender.
     """
     async with semaphore:
         # ----- rate limit gate (gates ALL dispatchers) -------------- #
@@ -365,6 +419,14 @@ async def _handle_message(
                     priority="HIGH",
                 )
                 return
+
+        # ----- auth gate (ADR-0007) --------------------------------- #
+        if not _verify_auth(msg, ctx.agent_tokens):
+            logger.warning(
+                "auth failed for from_agent=%s msg=%s -- dropping",
+                msg.from_agent, msg.id,
+            )
+            return
 
         dispatcher = dispatchers.get(msg.to_agent)
         if dispatcher is None:
@@ -430,10 +492,21 @@ async def _main_async(args: argparse.Namespace) -> int:
 
     semaphore = asyncio.Semaphore(args.concurrency)
     dispatchers = _build_dispatcher_table()
+    # Auth gate (ADR-0007): CLI flag wins, then env var. Empty = off.
+    agent_tokens = _parse_agent_tokens(args.auth_tokens)
+    if not agent_tokens and os.environ.get("AGENTOS_AUTH_TOKENS"):
+        agent_tokens = _parse_agent_tokens(os.environ["AGENTOS_AUTH_TOKENS"])
+    if agent_tokens:
+        logger.info(
+            "auth gate ON for from_agents=%s",
+            sorted(agent_tokens.keys()),
+        )
+
     ctx = DispatchContext(
         openclaw_driver=openclaw_driver,
         codex_adapter=codex_adapter,
         dry_run=args.dry_run,
+        agent_tokens=agent_tokens,
     )
     rate_limiter = _build_rate_limiter(args, have_llm=not args.dry_run)
 
@@ -609,6 +682,17 @@ def main() -> int:
         help=(
             "Disable rate limiting entirely. Useful for tests / "
             "manual replays where the bucket would be the bottleneck."
+        ),
+    )
+    ap.add_argument(
+        "--auth-tokens", type=str, default="",
+        help=(
+            "Per-agent auth tokens (ADR-0007). Format: "
+            "'agent1:token1,agent2:token2'. Messages from a configured "
+            "agent must carry payload['auth_token']=token or be dropped. "
+            "Empty (default) disables the gate. Env var "
+            "AGENTOS_AUTH_TOKENS is used as a fallback when this flag "
+            "is empty."
         ),
     )
     args = ap.parse_args()

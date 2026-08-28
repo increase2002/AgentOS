@@ -400,3 +400,104 @@ def test_dispatch_context_with_all_fields() -> None:
     assert isinstance(ctx.openclaw_driver, FakeDriver)
     assert isinstance(ctx.codex_adapter, FakeCodexAdapter)
     assert ctx.dry_run is True
+
+
+# --------------------------------------------------------------------------- #
+# Auth gate (ADR-0007) -- _parse_agent_tokens + _verify_auth + handler
+# --------------------------------------------------------------------------- #
+
+
+def test_parse_agent_tokens_empty() -> None:
+    assert sidecar._parse_agent_tokens("") == {}
+
+
+def test_parse_agent_tokens_single() -> None:
+    assert sidecar._parse_agent_tokens("codex:s3cret") == {"codex": "s3cret"}
+
+
+def test_parse_agent_tokens_multiple() -> None:
+    assert sidecar._parse_agent_tokens("codex:s3cret,openclaw:t0k3n") == {
+        "codex": "s3cret",
+        "openclaw": "t0k3n",
+    }
+
+
+def test_parse_agent_tokens_ignores_garbage() -> None:
+    assert sidecar._parse_agent_tokens(",,  ,codex:tok,,foo,bar:baz") == {
+        "codex": "tok",
+        "bar": "baz",
+    }
+
+
+def test_verify_auth_empty_expected_passes_everything() -> None:
+    # Back-compat: empty table = no auth required.
+    msg = _msg({"text": "x"}, to_agent="openclaw")
+    assert sidecar._verify_auth(msg, {}) is True
+    msg_bad = _msg({"text": "x"}, to_agent="openclaw")
+    assert sidecar._verify_auth(msg_bad, {}) is True
+
+
+def test_verify_auth_correct_token_passes() -> None:
+    msg = _msg({"auth_token": "t0k", "text": "x"}, to_agent="openclaw")
+    assert sidecar._verify_auth(msg, {"codex": "t0k"}) is True
+
+
+def test_verify_auth_missing_token_fails() -> None:
+    msg = _msg({"text": "x"}, to_agent="openclaw")
+    assert sidecar._verify_auth(msg, {"codex": "t0k"}) is False
+
+
+def test_verify_auth_wrong_token_fails() -> None:
+    msg = _msg({"auth_token": "wrong", "text": "x"}, to_agent="openclaw")
+    assert sidecar._verify_auth(msg, {"codex": "t0k"}) is False
+
+
+def test_verify_auth_unknown_sender_allowed_through() -> None:
+    # Senders not in the table are allowed (bootstrap safety).
+    msg = _msg({"text": "x"}, to_agent="openclaw")
+    assert sidecar._verify_auth(msg, {"someone_else": "t0k"}) is True
+
+
+@pytest.mark.asyncio
+async def test_handle_message_drops_unauthenticated_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Auth failure -> message is dropped, no LLM call, no bus reply."""
+    driver = FakeDriver()
+    ctx = sidecar.DispatchContext(
+        openclaw_driver=driver,
+        agent_tokens={"codex": "expected-token"},
+    )
+    captured: list[dict[str, Any]] = []
+    monkeypatch.setattr(sidecar, "_bus_send", lambda **kw: captured.append(kw))
+    msg = _msg({"text": "unauth"}, to_agent="openclaw")  # no auth_token
+
+    await sidecar._handle_message(
+        msg, sidecar._build_dispatcher_table(), ctx, asyncio.Semaphore(2), None,
+    )
+
+    assert driver.calls == []      # LLM not called
+    assert captured == []          # no error surfaced on bus
+
+
+@pytest.mark.asyncio
+async def test_handle_message_accepts_authenticated_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Correct token -> dispatch as usual."""
+    driver = FakeDriver()
+    ctx = sidecar.DispatchContext(
+        openclaw_driver=driver,
+        agent_tokens={"codex": "good-token"},
+    )
+    captured: list[dict[str, Any]] = []
+    monkeypatch.setattr(sidecar, "_bus_send", lambda **kw: captured.append(kw))
+    msg = _msg({"auth_token": "good-token", "text": "authed"}, to_agent="openclaw")
+
+    await sidecar._handle_message(
+        msg, sidecar._build_dispatcher_table(), ctx, asyncio.Semaphore(2), None,
+    )
+
+    assert len(driver.calls) == 1
+    assert len(captured) == 1
+    assert "openclaw-reply:authed" in captured[0]["text"]
