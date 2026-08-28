@@ -278,7 +278,7 @@ async def test_handle_message_routes_to_openclaw(
     msg = _msg({"text": "hello"}, to_agent="openclaw")
 
     await sidecar._handle_message(
-        msg, sidecar._build_dispatcher_table(), ctx, asyncio.Semaphore(2),
+        msg, sidecar._build_dispatcher_table(), ctx, asyncio.Semaphore(2), None,
     )
 
     assert len(driver.calls) == 1
@@ -297,7 +297,7 @@ async def test_handle_message_routes_to_codex(
     msg = _msg({"text": "ping"}, to_agent="codex")
 
     await sidecar._handle_message(
-        msg, sidecar._build_dispatcher_table(), ctx, asyncio.Semaphore(2),
+        msg, sidecar._build_dispatcher_table(), ctx, asyncio.Semaphore(2), None,
     )
 
     assert len(codex.calls) == 1
@@ -317,7 +317,7 @@ async def test_handle_message_unknown_routes_to_unknown(
 
     # Must not raise; unknown dispatch is a controlled skip
     await sidecar._handle_message(
-        msg, sidecar._build_dispatcher_table(), ctx, asyncio.Semaphore(2),
+        msg, sidecar._build_dispatcher_table(), ctx, asyncio.Semaphore(2), None,
     )
 
     assert driver.calls == []
@@ -339,7 +339,7 @@ async def test_handle_message_dispatcher_crash_is_contained(
 
     # Must not raise
     await sidecar._handle_message(
-        msg, dispatchers, ctx, asyncio.Semaphore(2),
+        msg, dispatchers, ctx, asyncio.Semaphore(2), None,
     )
 
 
@@ -369,7 +369,7 @@ async def test_handle_message_semaphore_gates_concurrency(
     await asyncio.gather(*[
         sidecar._handle_message(
             _msg({"text": f"t{i}"}, to_agent="openclaw"),
-            dispatchers, ctx, sem,
+            dispatchers, ctx, sem, None,
         )
         for i in range(3)
     ])

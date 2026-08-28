@@ -68,6 +68,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from agentos.bus.watch import BusWatcher  # noqa: E402
+from agentos.core.token_bucket import TokenBucket  # noqa: E402
 from agentos.schemas.message import Message  # noqa: E402
 
 logger = logging.getLogger("openclaw_sidecar")
@@ -329,13 +330,42 @@ async def _handle_message(
     dispatchers: dict[str, Dispatcher],
     ctx: DispatchContext,
     semaphore: asyncio.Semaphore,
+    rate_limiter: TokenBucket | None,
 ) -> None:
     """Dispatch one bus message via the dispatcher table.
 
     The semaphore gates total in-flight LLM turns across all backends so
-    we don't blow the 60M/5h shared budget.
+    we don't blow the 60M/5h shared budget. The optional ``rate_limiter``
+    token bucket is checked first (under the semaphore) so an empty
+    bucket short-circuits before any LLM call — we reply with a
+    [RATE_LIMITED] HANDOFF and the sender can back off instead of us
+    paying for a costly 429 from the provider.
     """
     async with semaphore:
+        # ----- rate limit gate (gates ALL dispatchers) -------------- #
+        if rate_limiter is not None and not ctx.dry_run:
+            decision = rate_limiter.try_consume()
+            if not decision.allowed:
+                retry_after_s = max(1.0, round(decision.retry_after_s, 1))
+                logger.warning(
+                    "rate-limited msg=%s to_agent=%s from=%s retry_after=%.1fs",
+                    msg.id, msg.to_agent, msg.from_agent, retry_after_s,
+                )
+                task_id = (msg.payload or {}).get("task_id") or msg.id
+                _bus_send(
+                    to_agent=msg.from_agent,
+                    from_agent="openclaw",
+                    text=(
+                        f"[RATE_LIMITED] bucket empty; "
+                        f"retry after {retry_after_s:.1f}s "
+                        f"(msg {msg.id} to={msg.to_agent})"
+                    ),
+                    task=task_id,
+                    msg_type="HANDOFF",
+                    priority="HIGH",
+                )
+                return
+
         dispatcher = dispatchers.get(msg.to_agent)
         if dispatcher is None:
             # Use the fallback directly (it doesn't need an LLM).
@@ -405,6 +435,7 @@ async def _main_async(args: argparse.Namespace) -> int:
         codex_adapter=codex_adapter,
         dry_run=args.dry_run,
     )
+    rate_limiter = _build_rate_limiter(args, have_llm=not args.dry_run)
 
     queue: asyncio.Queue[Message] = asyncio.Queue()
 
@@ -450,15 +481,15 @@ async def _main_async(args: argparse.Namespace) -> int:
     )
 
     consumer_task = asyncio.create_task(
-        _consume(queue, dispatchers, ctx, semaphore),
+        _consume(queue, dispatchers, ctx, semaphore, rate_limiter),
         name="sidecar-consumer",
     )
 
     logger.info(
         "sidecar started: bus=%s interval=%.2fs concurrency=%d dry_run=%s "
-        "watch_to=%s",
+        "watch_to=%s rate_rpm=%d burst=%d",
         args.bus, args.interval, args.concurrency, args.dry_run,
-        sorted(watch_to_set),
+        sorted(watch_to_set), args.rate_rpm, args.burst,
     )
 
     # Run the synchronous BusWatcher.watch() in a thread so it can block
@@ -490,13 +521,41 @@ async def _consume(
     dispatchers: dict[str, Dispatcher],
     ctx: DispatchContext,
     semaphore: asyncio.Semaphore,
+    rate_limiter: TokenBucket | None,
 ) -> None:
     while True:
         msg = await queue.get()
         try:
-            await _handle_message(msg, dispatchers, ctx, semaphore)
+            await _handle_message(
+                msg, dispatchers, ctx, semaphore, rate_limiter,
+            )
         except Exception:
             logger.exception("handler crashed for msg=%s", msg.id)
+
+
+# --------------------------------------------------------------------------- #
+# Rate limiter construction (separate so it's importable for tests).
+# --------------------------------------------------------------------------- #
+
+
+def _build_rate_limiter(
+    args: argparse.Namespace,
+    *,
+    have_llm: bool,
+) -> TokenBucket | None:
+    """Build the rate-limiter TokenBucket from CLI args.
+
+    Returns None when ``--no-rate-limit`` is set or there is no LLM
+    backend (dry-run mode): dry-run does not call the LLM so rate
+    limiting is moot, and ``--no-rate-limit`` is an explicit operator
+    override for when the bucket is the bottleneck rather than the LLM.
+    """
+    if getattr(args, "no_rate_limit", False):
+        return None
+    if not have_llm:
+        return None
+    refill_rate = args.rate_rpm / 60.0  # tokens per second
+    return TokenBucket(capacity=args.burst, refill_rate=refill_rate)
 
 
 def main() -> int:
@@ -526,6 +585,31 @@ def main() -> int:
     ap.add_argument(
         "--dry-run", action="store_true",
         help="Skip real LLM calls; just log what would be dispatched",
+    )
+    ap.add_argument(
+        "--rate-rpm", type=int, default=60,
+        help=(
+            "Max LLM-call rate in requests per minute (default: 60). "
+            "Token bucket refills at rate_rpm/60 tokens/sec; if the "
+            "bucket is empty when a bus message arrives the sidecar "
+            "sends a [RATE_LIMITED] HANDOFF instead of calling the LLM. "
+            "Applies to ALL dispatchers (openclaw + codex)."
+        ),
+    )
+    ap.add_argument(
+        "--burst", type=int, default=10,
+        help=(
+            "Token-bucket capacity (max burst size, default: 10). "
+            "First ``--burst`` bus messages in a row are accepted "
+            "without delay; subsequent ones wait for refill."
+        ),
+    )
+    ap.add_argument(
+        "--no-rate-limit", action="store_true",
+        help=(
+            "Disable rate limiting entirely. Useful for tests / "
+            "manual replays where the bucket would be the bottleneck."
+        ),
     )
     args = ap.parse_args()
 
